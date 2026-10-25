@@ -13,13 +13,13 @@
 ```
 ├── README.md            этот файл
 ├── docs/                ход исследования и протоколы
-│   ├── 03_native_plan.md           план native-проекта по этапам
-│   ├── 04_findings_v1.md           карта находок: разбор VideoResolution, DirectDraw
-│   ├── 05_findings_v2.md           причина: белый список раскладок 800x600/1024x768
-│   ├── 06_hit_test_model.md        инвариант rect==baked-таблица (почему кнопки живут)
-│   ├── 07_native_v1_regression.md  разбор регрессии v1 (мёртвые кнопки)
-│   ├── 08_deep_re_protocol.md      протокол шага 1 (Cheat Engine: what writes) — УСТАРЕЛ, см. 09
-│   └── 09_layout1024_anatomy.md    АНАТОМИЯ профиля 1024x768: Controls.reg, ShiftX/ShiftY,
+│   ├── 01_native_plan.md           план native-проекта по этапам
+│   ├── 02_findings_v1.md           карта находок: разбор VideoResolution, DirectDraw
+│   ├── 03_findings_v2.md           причина: белый список раскладок 800x600/1024x768
+│   ├── 04_hit_test_model.md        инвариант rect==baked-таблица (почему кнопки живут)
+│   ├── 05_native_v1_regression.md  разбор регрессии v1 (мёртвые кнопки)
+│   ├── 06_deep_re_protocol.md      протокол шага 1 (Cheat Engine: what writes) — УСТАРЕЛ, см. 09
+│   └── 07_layout1024_anatomy.md    АНАТОМИЯ профиля 1024x768: Controls.reg, ShiftX/ShiftY,
 │                                   records/active/rect'ы контрола, hit-test; поправка адресов
 │                                   (docs/04–08 сдвинуты на +0x400000, VA = file + 0x400000)
 ├── tools/               скрипты анализа и сборки патчей (python3 + pefile/capstone)
