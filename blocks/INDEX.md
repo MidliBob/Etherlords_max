@@ -25,7 +25,7 @@
 | 14 | 14_offset_record | 0x1911f0..0x191250 | 0x5911f0..0x591250 | 96 | cd96d5315f857ffa | OffsetRecord(elem,flag,dx,dy): record[flag].X+=dx,.Y+=dy; рекурсия в детей (+0x44/+0x48). |
 | 15 | 15_loader_geometry | 0x18c41d..0x18c4c9 | 0x58c41d..0x58c4c9 | 172 | a29918ed594aa4c8 | Лоадер Controls.reg: Left/Top/Width/Height -> SetRect(elem+0x154,{L,T,L+W,T+H}); 0x590e90 переводит в parent-relative. |
 | 16 | 16_loader_shiftxy | 0x18c905..0x18c944 | 0x58c905..0x58c944 | 63 | c3abff9bdf67e74e | Лоадер Controls.reg: ShiftX/ShiftY -> SetShift(elem,1,ShiftX,ShiftY) = record[1].sX/sY. |
-| 17 | 17_hittest | 0x18fb70..0x58fd44 | 0x58fb70..0x58fd44 | 468 | e840e93d9152bad1 | HitTest(x,y): рекурсия детей; маска +0x150 (stride +0x184, rect +0x174, цепочка родителей +0x34->+0x154/0x158, PtInRect+бит маски); иначе rect +0x164/+0x154 + PtInRect. |
+| 17 | 17_hittest | 0x18fb70..0x18fd44 | 0x58fb70..0x58fd44 | 468 | e840e93d9152bad1 | HitTest(x,y): рекурсия детей; маска +0x150 (stride +0x184, rect +0x174, цепочка родителей +0x34->+0x154/0x158, PtInRect+бит маски); иначе rect +0x164/+0x154 + PtInRect. |
 | 18 | 18_ctor_zero_records | 0x18f261..0x18f2b0 | 0x58f261..0x58f2b0 | 79 | 11252ba42a623f17 | Базовый конструктор контрола: зануляет record[0..1] (+0x18c..0x1ab) и act (+0x1ac..0x1bb). Размер Panel=0x1d0: место ровно под ДВЕ записи. |
 | 19 | 19_apply_shifts_pass | 0x18ca30..0x18ca88 | 0x58ca30..0x58ca88 | 88 | dd22a3c57c3859e3 | Пост-проход загрузки: ApplyShift(0x591190) для каждого элемента плоского списка менеджера. |
 | 20 | 20_live_viewport | 0x1a0070..0x1a0175 | 0x5a0070..0x5a0175 | 261 | 76fd01a3639ea6df | Создание viewport'а ЖИВЫМ размером: RECT{0,0,realW,realH} из [0x825de8]->+0x18->{+0x14,+0x18} (0x5a00fd). Потребитель — миникарта/hover-поверхности. |
