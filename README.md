@@ -13,8 +13,6 @@
 ```
 ├── README.md            этот файл
 ├── docs/                ход исследования и протоколы
-│   ├── 01_archive_triage.md        разбор NoCD-архива: что это, хеши, безопасность
-│   ├── 02_hires_guide.md           быстрый путь: dgVoodoo2/settings.ini (не native)
 │   ├── 03_native_plan.md           план native-проекта по этапам
 │   ├── 04_findings_v1.md           карта находок: разбор VideoResolution, DirectDraw
 │   ├── 05_findings_v2.md           причина: белый список раскладок 800x600/1024x768
