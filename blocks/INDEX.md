@@ -1,8 +1,8 @@
 # Блоки Etherlords.exe для работы
 
 Это НЕ полный бинарник, а целевые регионы реверса.
-**ImageBase 0x400000; для .text/.rdata/.data: VA = file + 0x400000** (см. docs/09, раздел 0 —
-старые листинги в docs/04–08 использовали сдвинутый на +0x400000 базис).
+**ImageBase 0x400000; для .text/.rdata/.data: VA = file + 0x400000** (см. docs/07, раздел 0 —
+старые листинги в docs/02–06 использовали сдвинутый на +0x400000 базис).
 
 Блоки нарезаны `tools/dump_blocks.py` (воспроизводимо):
 `python3 tools/dump_blocks.py reference/Etherlords.exe blocks`

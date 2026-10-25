@@ -3,8 +3,8 @@
 """
 patch_native_v2.py — сборщик native v2 для Etherlords.exe (Демиурги, рус. 1.07).
 
-Реализация плана docs/09 §6.2 (ревизия hook_skeleton.py). Все три потребителя
-координат (draw/hover/click, docs/06) приводятся к согласованию:
+Реализация плана docs/07 §6.2 (ревизия hook_skeleton.py). Все три потребителя
+координат (draw/hover/click, docs/04) приводятся к согласованию:
 
   P1  форс apply_layout(1) при любом разрешении (3 x jne->jmp, как patch_layout.py);
   H1  трамплин @0x59fccd: immediate W/H=1024/768 -> живые W/H из объекта режима
@@ -23,7 +23,7 @@ patch_native_v2.py — сборщик native v2 для Etherlords.exe (Деми�
 Записи record[0/1] (+0x18c/+0x19c) и active sX/sY (+0x1b4/+0x1b8) НЕ трогаются:
 это данные профилей (источник дельт relayout). Предполагается, что apply_layout
 выполняется один раз за процесс (внутри CScreenManager::Init, с предшествующей
-перезагрузкой Controls.reg) — см. docs/10, «Известные риски».
+перезагрузкой Controls.reg) — см. docs/08, «Известные риски».
 
 Статическая проверка: контрольные байты всех сайтов, аудит диффа (меняются только
 ожидаемые диапазоны), полный дизассемблер cave (capstone) с проверкой целей
@@ -36,7 +36,7 @@ patch_native_v2.py — сборщик native v2 для Etherlords.exe (Деми�
     python3 tools/patch_native_v2.py Etherlords.exe --check        # только проверка применимости
     python3 tools/patch_native_v2.py Etherlords.exe --listing      # + полный листинг cave
 
-Базис: VA = file + 0x400000 (docs/09 §0). Код-кейв: file 0x355656..0x356000
+Базис: VA = file + 0x400000 (docs/07 §0). Код-кейв: file 0x355656..0x356000
 (VA 0x755656..0x756000, нули внутри raw .text — исполняемый).
 """
 import argparse
@@ -755,7 +755,7 @@ def emu_tests(patched_img, va):
 
 # ----------------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="native v2 patcher (docs/09 §6.2, docs/10)")
+    ap = argparse.ArgumentParser(description="native v2 patcher (docs/07 §6.2, docs/08)")
     ap.add_argument("src", nargs="?", default="Etherlords.exe")
     ap.add_argument("--out", default="Etherlords_native_v2.exe")
     ap.add_argument("--check", action="store_true", help="только проверка применимости")
@@ -768,7 +768,7 @@ def main():
 
     print("\n[1/4] контрольные байты сайтов:")
     if not check_sites(d):
-        print("\nABORT: бинарь отличается от анализируемого билда (docs/09).")
+        print("\nABORT: бинарь отличается от анализируемого билда (docs/07).")
         sys.exit(2)
 
     print("\n[2/4] сборка cave:")
@@ -801,7 +801,7 @@ def main():
     print(f"\nwrote {args.out}  {len(img)} bytes  sha256={hashlib.sha256(img).hexdigest()[:16]}")
     print("Далее: бэкап своего Etherlords.exe, положить результат под его именем,")
     print("выставить VideoResolution (1600x900 / 2560x1440) и пройти критерий приемки")
-    print("(docs/06): нарисованные кнопки там, где раньше была hover-подсветка;")
+    print("(docs/04): нарисованные кнопки там, где раньше была hover-подсветка;")
     print("hover и click срабатывают в той же зоне. Откат при проблеме — бэкап")
     print("или безопасный базис tools/patch_layout.py.")
 

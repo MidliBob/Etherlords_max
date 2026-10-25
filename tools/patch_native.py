@@ -5,10 +5,10 @@ patch_native.py — v1 (РЕГРЕССИЯ). Не применять для иг
 
 !!! ВНИМАНИЕ: v1 ДАЁТ РЕГРЕССИЮ (мёртвые кнопки): подмена экранных rect'ов (секция A)
 !!! БЕЗ масштабирования координат элементов рассинхронизирует draw/hover/click.
-!!! См. docs/06_hit_test_model.md и docs/07_native_v1_regression.md;
-!!! ревизия плана v2 — docs/09 §6 и tools/hook_skeleton.py.
+!!! См. docs/04_hit_test_model.md и docs/05_native_v1_regression.md;
+!!! ревизия плана v2 — docs/07 §6 и tools/hook_skeleton.py.
 
-Адреса — настоящие VA (ImageBase 0x400000; VA = file + 0x400000, см. docs/09 §0).
+Адреса — настоящие VA (ImageBase 0x400000; VA = file + 0x400000, см. docs/07 §0).
 До ревизии файл был записан в старом базисе (file + 0x800000) и содержал
 незакрытый docstring (SyntaxError — скрипт не запускался вовсе). File-оффсеты
 и результирующие байты от смены базиса НЕ изменились.
@@ -25,7 +25,7 @@ import sys
 
 if "--force" not in sys.argv:
     print(__doc__)
-    print("Сборка v1 заблокирована (регрессия, docs/07). Безопасный базис — tools/patch_layout.py.")
+    print("Сборка v1 заблокирована (регрессия, docs/05). Безопасный базис — tools/patch_layout.py.")
     print("Для пересборки эталонного v1-бинара: --force")
     sys.exit(2)
 
