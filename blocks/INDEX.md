@@ -4,8 +4,9 @@
 **ImageBase 0x400000; для .text/.rdata/.data: VA = file + 0x400000** (см. docs/07, раздел 0 —
 старые листинги в docs/02–06 использовали сдвинутый на +0x400000 базис).
 
-Блоки нарезаны `tools/dump_blocks.py` (воспроизводимо):
-`python3 tools/dump_blocks.py reference/Etherlords.exe blocks`
+Блоки нарезаны `tools/dump_blocks.py` (воспроизводимо из любой копии билда `409d3e08…`;
+игрового бинарника в репозитории нет — см. `reference/original.md`):
+`python3 tools/dump_blocks.py /путь/к/вашему/Etherlords.exe blocks`
 
 | # | блок | file range | va range | bytes | sha256[:16] | назначение |
 |---|---|---|---|---|---|---|

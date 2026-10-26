@@ -315,4 +315,5 @@ ebx=flag, edi/ebp) сохраняется полностью; в конце вы
   capstone: 167 инструкций, все ветвления в разрешённом наборе, байт без остатка
 ```
 
-Листинг воспроизводим: `python3 tools/patch_native_v2.py reference/Etherlords.exe --check --listing`.
+Листинг воспроизводим: `python3 tools/patch_native_v2.py /путь/к/Etherlords.exe --check --listing`
+(билд `409d3e08…`; в репозитории exe нет — см. `reference/original.md`).
