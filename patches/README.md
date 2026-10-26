@@ -20,7 +20,7 @@
   design-константы меню сохранений, рамка CSelectMission, глобалы adv-экрана
   0x827e70/80 (фикс колеса). С 0.0.8 сборка ПО УМОЛЧАНИЮ: логгер H8/H9 ->
   el_evt.log (усекается каждый запуск, лимит 20000 рекордов), разбор
-  `tools/decode_evtlog.py`. `--no-logger` -> чистый release
+  `tools/decode_evtlog.py`; для пересылки лога в чат — `tools/evt2txt.py` (-> `el_evt_decoded.txt`). `--no-logger` -> чистый release
   `Etherlords_native_v6.exe`. БЫСТРЫЙ ЗАПУСК (0.0.9): положить
   `tools/patch_native_v3.py` в папку игры и запустить — создаст
   `Etherlords_native_v6dbg.exe` рядом с `Etherlords.exe`; игру запускать им
