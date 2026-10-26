@@ -43,8 +43,9 @@
 │   │                               хуки P1/H1–H6 (scale-on-create + маркер, спрайты
 │   │                               CButtonList, design-константы меню сохранений, рамка
 │   │                               CSelectMission, глобалы adv 0x827e70/80), верификация:
-│   │                               capstone-аудит, дифф-аудит, интерпретатор T1–T7 (56 проверок);
-│   │                               --debug -> v6dbg + бинарный лог el_evt.log (H8/H9)
+│   │                               capstone-аудит, дифф-аудит, интерпретатор T1–T8 (67 проверок);
+│   │                               логгер H8/H9 (el_evt.log) — в каждой сборке по умолчанию,
+│   │                               --no-logger -> чистый release v6
 │   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange)
 │   └── verify_original.py          сверка sha256 вашего Etherlords.exe с анализируемым билдом
 ├── blocks/              целевые регионы бинарника для реверса (НЕ полный exe)
@@ -75,12 +76,18 @@ python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Et
 
 Экспериментальный native v6 (масштабирование UI под любое разрешение; собиратель
 верифицирован статически и тестами, фикс колеса ЖДЁТ полевой приемки на Windows —
-протокол в `docs/09` §5):
+протокол в `docs/09` §5). С 0.0.8 **каждая сборка по умолчанию содержит debug-
+логгер** (el_evt.log): в репозитории нет исходного бинарника, и полевой лог —
+основной канал данных для итераций:
 
 ```bash
-python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe          # -> Etherlords_native_v6.exe (release)
-python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debug  # -> Etherlords_native_v6dbg.exe + лог el_evt.log
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe               # -> Etherlords_native_v6dbg.exe (с логгером)
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --no-logger   # -> Etherlords_native_v6.exe (чистый release)
 ```
+
+Логгер не требует действий: `el_evt.log` (cwd игры) перезаписывается при каждом
+запуске и ограничен 20000 рекордов (~880 КБ). После прогона пришлите его —
+разбор `python3 tools/decode_evtlog.py el_evt.log [vtable]`.
 
 ## Статус native (v6 — актуальный)
 
@@ -106,9 +113,14 @@ python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debu
   Фикс колеса ждёт полевой приемки (docs/09 §5). Остаточные проблемы: тексты
   строк списка сохранений (кэш CTextArray в design-координатах), позиция
   превью сохранений (docs/09 §3, доп. v3.1).
-- Сборщик с 0.0.6: по умолчанию release (без логгера) → `Etherlords_native_v6.exe`;
-  `--debug` → `Etherlords_native_v6dbg.exe` + лог (H8/H9, как полевая v5dbg).
-  H10 (логгер hit-test) удалён — не вмещался в cave (docs/09, доп. 0.0.6).
+- Сборщик с 0.0.8: логгер H8/H9 (set_rect/OnLayoutChange → `el_evt.log`) встроен
+  ПО УМОЛЧАНИЮ в каждую сборку → `Etherlords_native_v6dbg.exe`; лог усекается на
+  каждом запуске (всегда = последний сеанс), лимит 20000 рекордов (~880 КБ);
+  разбор `tools/decode_evtlog.py`. `--no-logger` → `Etherlords_native_v6.exe`
+  (чистый release, байт-в-байт как v6 из 0.0.6). Функциональные тесты теперь
+  прогоняются для любой сборки (T1–T8, 67 проверок в сборке с логгером).
+  H10 (логгер hit-test) по-прежнему не включён — не вмещался в cave
+  (docs/09, доп. 0.0.6 и 0.0.8).
 
 ## Статус native (v2, исторический)
 

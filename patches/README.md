@@ -14,10 +14,12 @@
 - `Etherlords_native_v2.exe` — `tools/patch_native_v2.py`
   (исторический native v2: масштабирование UI под произвольное разрешение;
   вытеснен v6 — главное меню чинил, но save-меню/глобальная карта съезжали).
-- `Etherlords_native_v6.exe` — `tools/patch_native_v3.py`
+- `Etherlords_native_v6dbg.exe` — `tools/patch_native_v3.py`
   (★ АКТУАЛЬНЫЙ экспериментальный native v3–v6: масштабирование UI под
   произвольное разрешение; scale-on-create + маркер, спрайты CButtonList,
   design-константы меню сохранений, рамка CSelectMission, глобалы adv-экрана
-  0x827e70/80 (фикс колеса). Release по умолчанию; `--debug` ->
-  `Etherlords_native_v6dbg.exe` + лог el_evt.log (H8/H9). Ждет полевой приемки —
-  протокол: `docs/09_native_v3.md` §5, состояние сборщика: доп. 0.0.6).
+  0x827e70/80 (фикс колеса). С 0.0.8 сборка ПО УМОЛЧАНИЮ: логгер H8/H9 ->
+  el_evt.log (усекается каждый запуск, лимит 20000 рекордов), разбор
+  `tools/decode_evtlog.py`. `--no-logger` -> чистый release
+  `Etherlords_native_v6.exe`. Ждет полевой приемки — протокол:
+  `docs/09_native_v3.md` §5, состояние сборщика: доп. 0.0.6 и 0.0.8).
