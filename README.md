@@ -22,9 +22,13 @@
 │   ├── 07_layout1024_anatomy.md    АНАТОМИЯ профиля 1024x768: Controls.reg, ShiftX/ShiftY,
 │                                   records/active/rect'ы контрола, hit-test; поправка адресов
 │                                   (docs/02–06 сдвинуты на +0x400000, VA = file + 0x400000)
-│   └── 08_native_v2_impl.md        РЕАЛИЗАЦИЯ native v2: карта хуков P1/H1–H3, листинг cave,
-│                                   верификация (capstone + интерпретатор, тесты T1–T4),
-│                                   известные риски, протокол приемки на Windows
+│   ├── 08_native_v2_impl.md        РЕАЛИЗАЦИЯ native v2: карта хуков P1/H1–H3, листинг cave,
+│   │                               верификация (capstone + интерпретатор, тесты T1–T4),
+│   │                               известные риски, протокол приемки на Windows
+│   └── 09_native_v3.md             ★ РЕАЛИЗАЦИЯ native v3: почему съезжали меню сохранений и
+│                                   глобальная карта (create-after-Init, CButtonList-спрайты,
+│                                   design-константы экранов), карта хуков H4–H6, маркер,
+│                                   верификация T1–T7, протокол приемки, остаточные риски
 ├── tools/               скрипты анализа и сборки патчей (python3 + pefile/capstone)
 │   ├── re_scan.py                  сканер: строки настроек, xref, aspect, DDraw vtable
 │   ├── dd_probe.py                 точечный дизассемблер + поиск vtable-вызовов
@@ -61,10 +65,29 @@ python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Et
 и критерии в `docs/08` §6):
 
 ```bash
-python3 tools/patch_native_v2.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_native_v2.exe
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_native_v5.exe
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debug   # v5dbg + лог перестановок
 ```
 
-## Статус native
+## Статус native (v3 — актуальный)
+
+- v2 чинил главное меню, но полевая приемка показала: меню сохранения/загрузки и
+  глобальная карта съезжают, hover колеса команд правее нарисованного. Причины
+  раскрыты статически (docs/09): контролы, создаваемые после Init (AddControl
+  0x58bbc0), собственный массив спрайтов CButtonList ([+0x1c0], шаг 0x34),
+  design-константы экранов (блок 0x8295xx, хардкод-рамка CSelectMission).
+- **v3 РЕАЛИЗОВАН** (`tools/patch_native_v3.py`): scale-on-create (H4) с
+  маркер-протоколом `(nibble[+0x14c]&0xC)==0x4` (идемпотентность пост-прохода),
+  масштабирование спрайт-rect'ов CButtonList в scale_one, идемпотентный
+  пересчёт design-констант меню сохранений (H5a/H5b + таблица 62 значений),
+  масштаб рамки CSelectMission (H6). Верификация: 10 сайтов, capstone-аудит
+  375 инструкций, дифф-аудит, интерпретатор T1–T7 (52 проверки, все зелёные).
+  Прогоны v3/v4 дали материал: post-mortem v4 (регресс H7: входы set_rect уже
+  native) → v5 = откат H7/колонок; для колеса нужен runtime-лог: сборка --debug
+  пишет el_evt.log (set_rect/OnLayoutChange), разбор tools/decode_evtlog.py
+  (docs/09, дополнения v3.1 и v4→v5).
+
+## Статус native (v2, исторический)
 
 - Причина найдена: у UI две зашитые раскладки (800x600 / 1024x768); при любом другом
   разрешении вызов применения раскладки пропускается (`docs/03`).
