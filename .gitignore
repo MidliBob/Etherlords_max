@@ -1,0 +1,11 @@
+# python
+__pycache__/
+*.pyc
+
+# выходы собирателей патчей (пишутся в CWD)
+/Etherlords_layout1024.exe
+/Etherlords_native*.exe
+
+# рантайм-логи debug-сборки (игра пишет в свой cwd)
+/el_evt.log
+/EL_DEBUG_ON.log
