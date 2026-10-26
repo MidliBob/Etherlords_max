@@ -36,9 +36,17 @@
 │   ├── patch_layout.py             ЭКСПЕРИМЕНТ B -> Etherlords_layout1024.exe (безопасный базис)
 │   ├── patch_native.py             v1 (РЕГРЕССИЯ, не использовать; оставлен как разбор; сборка только с --force)
 │   ├── hook_skeleton.py            v2 дизайн-заготовка (реализована в patch_native_v2.py)
-│   └── patch_native_v2.py          ★ СБОРЩИК native v2 -> Etherlords_native_v2.exe: cave
-│                                   (трамплин W/H + пост-проход RECT'ов + mask-fix), встроенная
-│                                   верификация: capstone-аудит, дифф-аудит, интерпретатор T1–T4
+│   ├── patch_native_v2.py          сборщик native v2 -> Etherlords_native_v2.exe: cave
+│   │                               (трамплин W/H + пост-проход RECT'ов + mask-fix), встроенная
+│   │                               верификация: capstone-аудит, дифф-аудит, интерпретатор T1–T4
+│   ├── patch_native_v3.py          ★ СБОРЩИК native v3–v6 -> Etherlords_native_v6.exe:
+│   │                               хуки P1/H1–H6 (scale-on-create + маркер, спрайты
+│   │                               CButtonList, design-константы меню сохранений, рамка
+│   │                               CSelectMission, глобалы adv 0x827e70/80), верификация:
+│   │                               capstone-аудит, дифф-аудит, интерпретатор T1–T7 (56 проверок);
+│   │                               --debug -> v6dbg + бинарный лог el_evt.log (H8/H9)
+│   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange)
+│   └── verify_original.py          сверка sha256 вашего Etherlords.exe с анализируемым билдом
 ├── blocks/              целевые регионы бинарника для реверса (НЕ полный exe)
 │   ├── INDEX.md                 таблица блоков: file/va range, sha256, назначение
 │   └── NN_<name>.asm/.hex       дизассемблер + hex каждого региона (01–21, перегенерированы)
@@ -46,7 +54,11 @@
 │   ├── original.md              sha256/md5/секции анализируемого билда
 │   └── Etherlords.exe           анализируемый билд — ВРЕМЕННО в репозитории: нужен
 │                                инструментам/хешам блоков; в финальных сборках удаляется
-└── patches/             сюда кладутся собранные патчи (пока пусто)
+├── patches/             сюда кладутся собранные патчи (пока пусто)
+│   └── README.md
+├── test/                артефакты полевых прогонов: v5dbg-сборка, el_evt.log (1965 записей)
+└── work/                рабочее пространство автора: исторические сборки v3/v4,
+                         кэши анализа (pkl), дизассемблер-хелпер disasm.py
     └── README.md
 ```
 
@@ -60,16 +72,16 @@ python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Et
 # сделать бэкап своего Etherlords.exe и положить результат под его именем
 ```
 
-Экспериментальный native v2 (масштабирование UI под любое разрешение; собиратель
-верифицирован статически и тестами, но ЖДЁТ полевой приемки на Windows — протокол
-и критерии в `docs/08` §6):
+Экспериментальный native v6 (масштабирование UI под любое разрешение; собиратель
+верифицирован статически и тестами, фикс колеса ЖДЁТ полевой приемки на Windows —
+протокол в `docs/09` §5):
 
 ```bash
-python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_native_v5.exe
-python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debug   # v5dbg + лог перестановок
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe          # -> Etherlords_native_v6.exe (release)
+python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debug  # -> Etherlords_native_v6dbg.exe + лог el_evt.log
 ```
 
-## Статус native (v3 — актуальный)
+## Статус native (v6 — актуальный)
 
 - v2 чинил главное меню, но полевая приемка показала: меню сохранения/загрузки и
   глобальная карта съезжают, hover колеса команд правее нарисованного. Причины
@@ -79,13 +91,23 @@ python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --debu
 - **v3 РЕАЛИЗОВАН** (`tools/patch_native_v3.py`): scale-on-create (H4) с
   маркер-протоколом `(nibble[+0x14c]&0xC)==0x4` (идемпотентность пост-прохода),
   масштабирование спрайт-rect'ов CButtonList в scale_one, идемпотентный
-  пересчёт design-констант меню сохранений (H5a/H5b + таблица 62 значений),
-  масштаб рамки CSelectMission (H6). Верификация: 10 сайтов, capstone-аудит
-  375 инструкций, дифф-аудит, интерпретатор T1–T7 (52 проверки, все зелёные).
-  Прогоны v3/v4 дали материал: post-mortem v4 (регресс H7: входы set_rect уже
-  native) → v5 = откат H7/колонок; для колеса нужен runtime-лог: сборка --debug
-  пишет el_evt.log (set_rect/OnLayoutChange), разбор tools/decode_evtlog.py
-  (docs/09, дополнения v3.1 и v4→v5).
+  пересчёт design-констант меню сохранений (H5a/H5b), масштаб рамки
+  CSelectMission (H6). Прогоны v3/v4 дали материал: post-mortem v4 (регресс H7:
+  входы set_rect уже native) → **v5** = откат H7/колонок; для колеса нужен
+  runtime-лог: сборка `--debug` пишет el_evt.log (set_rect/OnLayoutChange),
+  разбор tools/decode_evtlog.py (docs/09, дополнения v3.1 и v4→v5).
+- **v6 РЕАЛИЗОВАН** (тот же сборщик; docs/09, доп. v5→v6): по el_evt.log
+  (1965 записей) найдена причина съезда колеса — design-глобалы adv-экрана
+  0x827e70/0x827e80 (читаются fn 0x5036xx, пишутся в hit-цепочку, визуал не
+  двигается). Пост-проход масштабирует их при k!=1 (тест T3b). Верификация
+  release-сборки: 10 сайтов, cave 1766/2474, capstone-аудит 418 инструкций,
+  дифф-аудит, интерпретатор T1–T7 + T3b/T5c/T6b (56 проверок, все зелёные).
+  Фикс колеса ждёт полевой приемки (docs/09 §5). Остаточные проблемы: тексты
+  строк списка сохранений (кэш CTextArray в design-координатах), позиция
+  превью сохранений (docs/09 §3, доп. v3.1).
+- Сборщик с 0.0.6: по умолчанию release (без логгера) → `Etherlords_native_v6.exe`;
+  `--debug` → `Etherlords_native_v6dbg.exe` + лог (H8/H9, как полевая v5dbg).
+  H10 (логгер hit-test) удалён — не вмещался в cave (docs/09, доп. 0.0.6).
 
 ## Статус native (v2, исторический)
 
