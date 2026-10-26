@@ -6,6 +6,7 @@
 Рекорд 44 байта: kind, this, vtable, ret, mark, d0..d4, pad.
 kind 1 = set_rect(this, {d0..d3}), kind 2 = OnLayoutChange(this, dShX,dShY,dX,dY).
 Использование:  python3 tools/decode_evtlog.py el_evt.log [filter_vtable_hex]
+Расширение файла произвольное (пересылать лог можно как el_evt.log.txt).
 """
 import struct, sys
 
