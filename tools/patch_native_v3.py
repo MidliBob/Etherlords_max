@@ -124,6 +124,8 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
+TOOL_REV = "0.0.12"                      # ревизия сборщика: печатается в баннере и
+                                         # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
 SITE_P1 = [
@@ -884,9 +886,10 @@ def build_evt_hover(va, env):
     a = Asm(va)
     a.pushad()
     a.mov_r_abs32('eax', VA_LOG_LASTI)
-    a.cmp_rr('eax', 'edi')
+    a.lea_r_mem('ecx', 'edi', 1)       # 0.0.12: храним i+1 (0 = «ещё не было»),
+    a.cmp_rr('eax', 'ecx')             # иначе dedup съедал первый hover кнопки i=0
     a.je('skip')                       # тот же индекс — не логируем повторно
-    a.mov_mem_abs('edi', VA_LOG_LASTI)
+    a.mov_mem_abs('ecx', VA_LOG_LASTI)
     a.sub_esp(56)
     a.mov_r_imm('eax', 3);              a.mov_mem_r('esp', 0, 'eax')
     a.mov_mem_r('esp', 4, 'esi')
@@ -1642,6 +1645,8 @@ def emu_tests(patched_img, va):
         ctrl, arr = HEAP + 0x5000, HEAP + 0x6000
         m.w32(ctrl + 0x0, 0x75D498)                 # vtable CButtonList
         m.w32(ctrl + 0x1c0, arr)
+        for j, v in enumerate((100, 50, 200, 130)):
+            m.w32(arr + 0x14 + 4 * j, v)            # rect кнопки i=0
         for j, v in enumerate((1200, 700, 1300, 780)):
             m.w32(arr + 0x34 + 0x14 + 4 * j, v)     # rect кнопки i=1
         m.w32(ctrl + 0x14c, 0xF05FFFF6)
@@ -1651,29 +1656,37 @@ def emu_tests(patched_img, va):
         esp0 = STACK + 0x10000
         m.w32(esp0 + 0x30, 1550)                    # cursor X (frame[0x30])
         m.w32(esp0 + 0x34, 810)                     # cursor Y
-        cpu.r.update(esi=ctrl, edi=1, ebx=0x34, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
+        # первый hover кнопки i=0 (0.0.12: dedup не должен его съесть)
+        cpu.r.update(esi=ctrl, edi=0, ebx=0x00, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
         cpu.run(va['evt_hover'], RET_H11)
         b = esp0 - 88                               # рекорд на стеке
-        chk("T9 kind=3", m.r32(b + 0), 3)
-        chk("T9 this", m.r32(b + 4), ctrl)
-        chk("T9 vtable", m.r32(b + 8), 0x75D498)
-        chk("T9 ret-маркер сайта", m.r32(b + 12), 0x57CFEE)
-        chk("T9 i", m.r32(b + 16), 1)
-        chk("T9 cursor=(1550,810)", (m.r32(b + 20), m.r32(b + 24)), (1550, 810))
-        chk("T9 rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
-            [1200, 700, 1300, 780])
-        chk("T9 флаги [+0x14c]", m.r32(b + 44), 0xF05FFFF6)
-        chk("T9 stolen: [esi+0x28c]=i", m.r32(ctrl + 0x28c), 1)
-        chk("T9 WriteFile len=56", m.r32(SLOT_LEN), 56)
-        chk("T9 regs preserved", (cpu.r['esi'], cpu.r['edi'], cpu.r['ebx']),
-            (ctrl, 1, 0x34))
-        chk("T9 esp balance", cpu.r['esp'], esp0)
+        chk("T9 i=0: kind=3", m.r32(b + 0), 3)
+        chk("T9 i=0: this", m.r32(b + 4), ctrl)
+        chk("T9 i=0: vtable", m.r32(b + 8), 0x75D498)
+        chk("T9 i=0: ret-маркер сайта", m.r32(b + 12), 0x57CFEE)
+        chk("T9 i=0: i", m.r32(b + 16), 0)
+        chk("T9 i=0: cursor=(1550,810)", (m.r32(b + 20), m.r32(b + 24)), (1550, 810))
+        chk("T9 i=0: rect array[0]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
+            [100, 50, 200, 130])
+        chk("T9 i=0: флаги [+0x14c]", m.r32(b + 44), 0xF05FFFF6)
+        chk("T9 i=0: stolen [esi+0x28c]=i", m.r32(ctrl + 0x28c), 0)
+        chk("T9 i=0: WriteFile len=56", m.r32(SLOT_LEN), 56)
+        chk("T9 i=0: regs preserved", (cpu.r['esi'], cpu.r['edi'], cpu.r['ebx']),
+            (ctrl, 0, 0x00))
+        chk("T9 i=0: esp balance", cpu.r['esp'], esp0)
         # dedup: тот же i повторно — записи нет
         m.w32(SLOT_LEN, 0)
+        cpu.r.update(esi=ctrl, edi=0, ebx=0x00, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
+        cpu.run(va['evt_hover'], RET_H11)
+        chk("T9 dedup: повторный i=0 не пишется", m.r32(SLOT_LEN), 0)
+        chk("T9 dedup: esp balance", cpu.r['esp'], esp0)
+        # другой индекс — пишется снова
         cpu.r.update(esi=ctrl, edi=1, ebx=0x34, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
         cpu.run(va['evt_hover'], RET_H11)
-        chk("T9 dedup: повторный i не пишется", m.r32(SLOT_LEN), 0)
-        chk("T9 dedup: esp balance", cpu.r['esp'], esp0)
+        chk("T9 смена i: пишется", m.r32(SLOT_LEN), 56)
+        chk("T9 смена i: i=1", m.r32(b + 16), 1)
+        chk("T9 смена i: rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
+            [1200, 700, 1300, 780])
 
     return ok
 
@@ -1731,6 +1744,7 @@ def main():
         # явный путь src: как раньше, в каталог запуска (или --out).
         args.out = os.path.join(os.path.dirname(os.path.abspath(src)), name) if from_default else name
     d = open(src, "rb").read()
+    print(f"tool   : patch_native_v3.py rev {TOOL_REV}")
     print(f"source : {src}  {len(d)} bytes  sha256={hashlib.sha256(d).hexdigest()[:16]}")
 
     print("\n[1/4] контрольные байты сайтов:")
