@@ -9,3 +9,10 @@ __pycache__/
 # рантайм-логи debug-сборки (игра пишет в свой cwd)
 /el_evt.log
 /EL_DEBUG_ON.log
+
+# исключено из отслеживания в 0.0.6 (untrack 4a15a78): на диске могут лежать,
+# в репозиторий попадать не должны
+reference/Etherlords.exe
+work/*.pkl
+work/*.exe
+test/*.exe
