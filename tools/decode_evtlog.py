@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 """decode_evtlog.py — разбор бинарного лога el_evt.log debug-сборок (v5dbg;
 с 0.0.8 логгер H8/H9 встроен в КАЖДУЮ сборку по умолчанию — v6dbg).
+С 0.0.11 также kind=3 (H11: hover-сайт CButtonList, рекорд 56 Б).
 
-Рекорд 44 байта: kind, this, vtable, ret, mark, d0..d4, pad.
-kind 1 = set_rect(this, {d0..d3}), kind 2 = OnLayoutChange(this, dShX,dShY,dX,dY).
 Использование:  python3 tools/decode_evtlog.py el_evt.log [filter_vtable_hex]
 Расширение файла произвольное (пересылать лог можно как el_evt.log.txt).
 """
@@ -21,23 +20,46 @@ VT = {
     0x75d5dc: 'CLevelList', 0x75a93c: 'CPanelFader', 0x75aba0: 'CFadingButton',
 }
 
+
+def iter_records(data):
+    """Рекорды переменной длины: kind=3 -> 56 байт, иначе 44."""
+    off = 0
+    while off + 44 <= len(data):
+        kind = struct.unpack_from('<I', data, off)[0]
+        if kind == 3 and off + 56 <= len(data):
+            yield struct.unpack_from('<14I', data, off)
+            off += 56
+        else:
+            yield struct.unpack_from('<11I', data, off)
+            off += 44
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else 'el_evt.log'
     flt = int(sys.argv[2], 16) if len(sys.argv) > 2 else None
     data = open(path, 'rb').read()
-    n = len(data) // 44
-    print(f"{path}: {n} records ({len(data)} bytes)")
-    for i in range(n):
-        k, this, vt, ret, mark, d0, d1, d2, d3, d4, pad = struct.unpack_from('<11I', data, i * 44)
+    recs = list(iter_records(data))
+    print(f"{path}: {len(recs)} records ({len(data)} bytes)")
+    for i, r in enumerate(recs):
+        k, this, vt, ret, mark = r[0], r[1], r[2], r[3], r[4]
         if flt and vt != flt:
             continue
         name = VT.get(vt, f'?{vt:#x}')
         if k == 1:
+            d0, d1, d2, d3 = r[5:9]
             print(f"{i:6d} set_rect  this={this:#010x} vt={name:22s} ret={ret:#010x} "
                   f"mark={mark:#04x} rect=({d0},{d1},{d2},{d3})")
-        else:
+        elif k == 2:
+            d0, d1, d2, d3 = r[5:9]
             print(f"{i:6d} OnLayout  this={this:#010x} vt={name:22s} ret={ret:#010x} "
                   f"mark={mark:#04x} d=({d0},{d1},{d2},{d3})")
+        elif k == 3:
+            i_btn, cx, cy, L, T, R, B, flags = r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11]
+            print(f"{i:6d} hover     this={this:#010x} vt={name:22s} i={i_btn} "
+                  f"cursor=({cx},{cy}) rect=({L},{T},{R},{B}) flags={flags:#010x}")
+        else:
+            print(f"{i:6d} kind={k}  this={this:#010x} vt={name:22s} ret={ret:#010x} raw={r[5:]}")
+
 
 if __name__ == '__main__':
     main()
