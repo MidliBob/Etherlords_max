@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""decode_evtlog.py — разбор бинарного лога debug-сборки (Etherlords_native_v5dbg).
+"""decode_evtlog.py — разбор бинарного лога el_evt.log debug-сборок (v5dbg;
+с 0.0.8 логгер H8/H9 встроен в КАЖДУЮ сборку по умолчанию — v6dbg).
 
 Рекорд 44 байта: kind, this, vtable, ret, mark, d0..d4, pad.
 kind 1 = set_rect(this, {d0..d3}), kind 2 = OnLayoutChange(this, dShX,dShY,dX,dY).

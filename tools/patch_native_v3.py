@@ -38,14 +38,20 @@ ctor пишет nibble=0xF (0x58f2cf), apply_flag — 1/2, поэтому 0x4..0
 игре не возникают; бит 0x8 не используем (входит в 0xF ctor'а).
 
 Сборка/проверка как в v2: контрольные байты сайтов, capstone-аудит cave, аудит
-диффа, интерпретатор i386 (тесты T1..T7 + T3b/T5c/T6b — 56 проверок).
+диффа, интерпретатор i386 (тесты T1..T7 + T3b/T5c/T6b — 56 проверок; с 0.0.8
+прогоняются для ЛЮБОЙ сборки — логгер-стабы в тестах не исполняются).
 
-    python3 tools/patch_native_v3.py Etherlords.exe          # release -> Etherlords_native_v6.exe
-    python3 tools/patch_native_v3.py Etherlords.exe --debug  # -> v6dbg + лог el_evt.log (H8/H9)
+    python3 tools/patch_native_v3.py Etherlords.exe               # -> Etherlords_native_v6dbg.exe (с логгером)
+    python3 tools/patch_native_v3.py Etherlords.exe --no-logger   # -> Etherlords_native_v6.exe (чистый release)
 
-0.0.6: release — по умолчанию (логгер выключен); --debug собирает логгер
-set_rect/OnLayoutChange (H8/H9, как полевая v5dbg). H10 (evt_hit) удалён —
-не вмещался в cave (см. docs/09, доп. 0.0.6).
+0.0.8: логгер H8/H9 (set_rect/OnLayoutChange -> el_evt.log) ВКЛЮЧЁН ПО УМОЛЧАНИЮ
+В КАЖДОЙ СБОРКЕ — в репозитории нет исходного бинарника (0.0.6), полевой лог
+основной канал данных. Лог усекается на первом событии сессии (CREATE_ALWAYS)
+и ограничен DBG_CAP=20000 рекордов (~880 КБ); состояние — проверенно свободные
+dword'ы .data 0x830040/0x830044 (НЕ 0x829764/68 из docs/09 §3 — они заняты
+игрой, см. доп. 0.0.8). --no-logger = чистый release, байты идентичны v6 из
+0.0.6 (sha256 5ad61f0e…). H10 (evt_hit) по-прежнему не включён — не влезает
+в cave (доп. 0.0.6).
 """
 import argparse
 import hashlib
@@ -75,13 +81,13 @@ VA_DRAWBASE = 0x5905D0                   # базовый Draw (украденн
 VTBL_BUTTONLIST = 0x75D498               # CButtonList: спрайт-массив rect'ов
 MARK_MASK   = 0x0C
 
-# логгер событий set_rect / OnLayoutChange — ТОЛЬКО debug-сборка (--debug, H8/H9,
-# как полевая v5dbg): el_evt.log в cwd игры, разбор tools/decode_evtlog.py.
-# H10 (evt_hit, логгер hit-test-масок) в 0.0.6 УДАЛЁН: с ним cave переполнялся
-# (2507 > 2474) и сборка по умолчанию падала; в полевых билдах он не бывал
-# (test/Etherlords_native_v5dbg.exe собран без хука на 0x58fb70). Возврат —
-# только вместе с расширением cave (новая PE-секция). См. docs/09, доп. 0.0.6.
-DEBUG = False
+# логгер событий set_rect / OnLayoutChange (H8/H9) — ПО УМОЛЧАНИЮ В КАЖДОЙ
+# СБОРКЕ (0.0.8): в репозитории больше нет исходного бинарника (0.0.6), полевой
+# el_evt.log — основной канал данных для итераций. Чистый release: --no-logger.
+# H10 (evt_hit, логгер hit-test-масок) удалён в 0.0.6: с ним cave переполнялся
+# (2507 > 2474); возврат — только вместе с расширением cave (новая PE-секция).
+# См. docs/09, доп. 0.0.6 и 0.0.8.
+DEBUG = True
 SITE_H8 = ("H8", 0x58F690, "8b4424048b10", 6)    # set_rect prologue
 SITE_H9 = ("H9", 0x5912E0, "8b44240853", 5)      # OnLayoutChange prologue
 RET_OLC = 0x5912E5
@@ -89,6 +95,17 @@ RET_SETRECT = 0x58F696
 IAT_CREATEFILEA = 0x756270
 IAT_CLOSEHANDLE = 0x7560D0
 IAT_WRITEFILE   = 0x75617C
+# Состояние логгера: два dword'а в нулевом (виртуальном) хвосте .data (секция
+# R+W; .text не записываем). Свободность ПРОВЕРЕНА: во всём бинарнике нет ни
+# одной 4-байтовой ссылки на 0x830040/0x830044 (pattern-scan). ВНИМАНИЕ:
+# 0x829764/0x829768 из docs/09 §3 (v4→v5, «xref'ов нет») ЗАНЯТЫ — их пишет
+# сама игра (mov [0x829764],0xa1 @0x54191e, mov [0x829768],edx @0x541bfc,
+# mov ebx,0x829768 @0x5428de — блок констант экрана сохранений). Отгруженная
+# v5dbg их фактически не использовала (в её cave нет ссылок), но повторно
+# брать их нельзя.
+VA_LOG_FLAG   = 0x830040   # 0 = первое событие сессии: CREATE_ALWAYS (усечь лог), далее 1
+VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
+DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -225,6 +242,9 @@ class Asm:
     def je(self, t):   self.jz(t)
     def jne(self, t):  self.jnz(t)
     def jae(self, t):  self._branch(b'\x0F\x83', t)
+    def jbe(self, t):  self._branch(b'\x0F\x86', t)
+    def inc_abs32(self, va):           self._e(b'\xFF\x05' + _p32(va))
+    def cmp_abs32_imm(self, va, imm):  self._e(b'\x81\x3D' + _p32(va) + _p32(imm))
     def jmp32(self, t): self._branch(b'\xE9', t)
     def call_va(self, va):
         pos = len(self.b)
@@ -730,20 +750,44 @@ def build_evt_str(va, env):
 
 
 def build_evt_write(va, env):
-    """evt_write(eax=name_z, edx=buf, ecx=len): CreateFileA(OPEN_ALWAYS,
-    FILE_APPEND_DATA) -> WriteFile -> CloseHandle, без кэша и глобалов
-    (относительный путь = cwd игры, тот же, где HallOfFame.hl).
-    Портит eax/ecx/edx/ebx; вызывается под pushad стабов."""
+    """evt_write(eax=name_z, edx=buf, ecx=len): пишет один рекорд в el_evt.log.
+
+    CreateFileA(FILE_APPEND_DATA) -> WriteFile -> CloseHandle на каждый вызов,
+    без кэша handle (его негде безопасно хранить, кроме проверенных dword'ов
+    ниже). Относительный путь = cwd игры (тот же, где HallOfFame.hl).
+
+    Состояние логгера (0.0.8) — dword'ы VA_LOG_FLAG/VA_LOG_COUNT в нулевом
+    хвосте .data (загрузчик зануляет их на старте процесса):
+      * первое событие сессии (flag==0): CREATE_ALWAYS — старый el_evt.log
+        УСекается, лог всегда соответствует последнему запуску; flag:=1;
+      * последующие: OPEN_ALWAYS (append);
+      * после DBG_CAP рекордов записи прекращаются (защита от безлимита).
+    Портит eax/ecx/edx/ebx (esi/edi сохраняет); вызывается под pushad стабов.
+    Ошибка CreateFileA (нет прав на cwd) -> тихий выход, без краша."""
     a = Asm(va)
     a.push_r('ebx')
+    a.inc_abs32(VA_LOG_COUNT)                      # счётчик рекордов сессии
+    a.cmp_abs32_imm(VA_LOG_COUNT, DBG_CAP)
+    a.jbe('cap_ok')
+    a.pop_r('ebx')                                 # лимит: больше не пишем
+    a.ret()
+    a.L('cap_ok')
+    a.mov_r_abs32('ebx', VA_LOG_FLAG)              # 0 = первое событие сессии
     a.push_r('esi')
     a.push_r('edi')
-    a.mov_rr('ebx', 'eax')                       # name
-    a.mov_rr('esi', 'edx')                       # buf
-    a.mov_rr('edi', 'ecx')                       # len
+    a.mov_rr('esi', 'edx')                         # buf
+    a.mov_rr('edi', 'ecx')                         # len
+    a.mov_r_imm('edx', 4)                          # OPEN_ALWAYS (append)
+    a.test_rr('ebx', 'ebx')
+    a.jnz('have_disp')
+    a.mov_r_imm('edx', 2)                          # CREATE_ALWAYS: усекаем старый лог
+    a.mov_r_imm('ebx', 1)
+    a.mov_mem_abs('ebx', VA_LOG_FLAG)              # [flag] = 1
+    a.L('have_disp')
+    a.mov_rr('ebx', 'eax')                         # name
     a.push_imm(0)                                # hTemplateFile
     a.push_imm(0x00000080)                       # dwFlagsAndAttributes
-    a.push_imm(4)                                # OPEN_ALWAYS
+    a.push_r('edx')                              # dwCreationDisposition
     a.push_imm(0)                                # lpSecurityAttributes
     a.push_imm(7)                                # share R|W|D
     a.push_imm(0x00000004)                       # FILE_APPEND_DATA
@@ -1035,6 +1079,7 @@ class Mini386:
         self.r = {n: 0 for n in self.ORDER}
         self.eip = 0
         self.zf = 0
+        self.cf = 0
         from capstone import Cs, CS_ARCH_X86, CS_MODE_32
         self.md = Cs(CS_ARCH_X86, CS_MODE_32)
         self.md.detail = True
@@ -1112,8 +1157,12 @@ class Mini386:
         elif m == 'test':
             self.zf = 1 if (self._get(ops[0]) & self._get(ops[1])) == 0 else 0; self.eip = nxt
         elif m == 'cmp':
-            self.zf = 1 if (self._get(ops[0]) & 0xFFFFFFFF) == (self._get(ops[1]) & 0xFFFFFFFF) else 0
+            a, b = self._get(ops[0]) & 0xFFFFFFFF, self._get(ops[1]) & 0xFFFFFFFF
+            self.zf = 1 if a == b else 0
+            self.cf = 1 if a < b else 0           # unsigned (для jbe/jae теста T8)
             self.eip = nxt
+        elif m == 'inc':
+            self._set(ops[0], self._get(ops[0]) + 1); self.eip = nxt
         elif m == 'imul':
             if len(ops) == 2:
                 v = _s32(self._get(ops[0])) * _s32(self._get(ops[1]))
@@ -1148,6 +1197,14 @@ class Mini386:
             self.eip = self._get(ops[0]) if self.zf else nxt
         elif m in ('jnz', 'jne'):
             self.eip = self._get(ops[0]) if not self.zf else nxt
+        elif m in ('jbe', 'jna'):
+            self.eip = self._get(ops[0]) if (self.cf or self.zf) else nxt
+        elif m in ('jae', 'jnb', 'jnc'):
+            self.eip = self._get(ops[0]) if not self.cf else nxt
+        elif m in ('jb', 'jnae', 'jc'):
+            self.eip = self._get(ops[0]) if self.cf else nxt
+        elif m in ('ja', 'jnbe'):
+            self.eip = self._get(ops[0]) if not (self.cf or self.zf) else nxt
         elif m == 'pushal':
             esp0 = self.r['esp']
             for n in self.ORDER:
@@ -1447,6 +1504,59 @@ def emu_tests(patched_img, va):
     chk("gate off: design L", m.r32(esp0 + 0x14), 0x9E)
     chk("gate off: esp balance", cpu.r['esp'], esp0)
 
+    # --- T8: evt_write логгера (0.0.8) — CreateFileA/WriteFile/CloseHandle
+    # эмулируются stdcall-заглушками; проверяются: усечение лога на первом
+    # событии сессии (CREATE_ALWAYS), append после (OPEN_ALWAYS), лимит
+    # DBG_CAP (ранний выход без CreateFileA), баланс esp, esi/edi целы.
+    if 'evt_write' not in va:
+        print("test T8: пропущен (release-сборка без логгера)")
+    else:
+        print("test T8: evt_write (truncate-per-session + cap DBG_CAP)")
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        NAME, BUF = HEAP + 0x31100, HEAP + 0x31200
+        STOP = STACK                                  # сентинел ret-адреса
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")   # [esp+0x14]=disp->slot; eax=0x1234; ret 28
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")    # nBytes->slot; eax=1; ret 20
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"        # eax=1; ret 4
+
+        def run_evt(cpu, m, esp0):
+            m.w32(IAT_CREATEFILEA, STUBS)
+            m.w32(IAT_WRITEFILE, STUBS + 32)
+            m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+            cpu.r.update(eax=NAME, edx=BUF, ecx=44,
+                         esi=0xE5E5, edi=0xD7D7, esp=esp0)
+            m.w32(esp0, STOP)
+            cpu.run(va['evt_write'], STOP)
+
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.wb(NAME, b"el_evt.log\x00")
+        m.wb(BUF, b'\xAB' * 44)
+        m.w32(VA_LOG_FLAG, 0); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        run_evt(cpu, m, esp0)
+        chk("T8.1 esp balance (ret)", cpu.r['esp'], esp0 + 4)
+        chk("T8.1 flag:=1 (сессия начата)", m.r32(VA_LOG_FLAG), 1)
+        chk("T8.1 count=1", m.r32(VA_LOG_COUNT), 1)
+        chk("T8.1 disposition=CREATE_ALWAYS(2)", m.r32(SLOT_DISP), 2)
+        chk("T8.1 WriteFile len=44", m.r32(SLOT_LEN), 44)
+        chk("T8.1 esi/edi preserved", (cpu.r['esi'], cpu.r['edi']), (0xE5E5, 0xD7D7))
+        m.w32(SLOT_DISP, 0xDEAD)
+        run_evt(cpu, m, esp0)
+        chk("T8.2 disposition=OPEN_ALWAYS(4)", m.r32(SLOT_DISP), 4)
+        chk("T8.2 count=2", m.r32(VA_LOG_COUNT), 2)
+        m.w32(VA_LOG_COUNT, DBG_CAP)
+        m.w32(SLOT_DISP, 0xBEEF)
+        run_evt(cpu, m, esp0)
+        chk("T8.3 cap: CreateFileA не вызван", m.r32(SLOT_DISP), 0xBEEF)
+        chk("T8.3 cap: count=DBG_CAP+1", m.r32(VA_LOG_COUNT), DBG_CAP + 1)
+        chk("T8.3 cap: esp balance", cpu.r['esp'], esp0 + 4)
+
     return ok
 
 
@@ -1459,11 +1569,12 @@ def main():
     ap.add_argument("--listing", action="store_true", help="печатать дизассемблер cave")
     ap.add_argument("--no-emu", action="store_true", help="пропустить функциональные тесты")
     ap.add_argument("--debug", action="store_true",
-                    help="debug-сборка (v6dbg): логгер set_rect/OnLayoutChange (H8/H9) "
-                         "пишет el_evt.log в cwd игры; разбор tools/decode_evtlog.py")
+                    help="(устарел, no-op) логгер H8/H9 с 0.0.8 включён в каждой сборке")
+    ap.add_argument("--no-logger", action="store_true",
+                    help="чистый release без логгера H8/H9 -> Etherlords_native_v6.exe")
     args = ap.parse_args()
     global DEBUG
-    DEBUG = args.debug
+    DEBUG = not args.no_logger
 
     if args.out is None:
         args.out = "Etherlords_native_v6dbg.exe" if DEBUG else "Etherlords_native_v6.exe"
@@ -1493,10 +1604,9 @@ def main():
         print("\nCHECK OK: патч применим.")
         return
 
-    if args.debug:
-        print("\n[4/4] эмуляция пропущена в debug-сборке (логгер использует IAT)")
-    elif not args.no_emu:
+    if not args.no_emu:
         print("\n[4/4] интерпретатор: функциональные тесты cave (T1..T7)")
+        print("      (логгер-стабы H8/H9 в тестах не исполняются — IAT не эмулируется)")
         if not emu_tests(img, va):
             print("\nABORT: тесты провалены — файл НЕ записан.")
             sys.exit(3)
