@@ -58,6 +58,11 @@ dword'ы .data 0x830040/0x830044 (НЕ 0x829764/68 из docs/09 §3 — они �
 игрой, см. доп. 0.0.8). --no-logger = чистый release, байты идентичны v6 из
 0.0.6 (sha256 5ad61f0e…). H10 (evt_hit) по-прежнему не включён — не влезает
 в cave (доп. 0.0.6).
+
+0.0.11: debug-сборка ДОПОЛНИТЕЛЬНО хукает H11 — hover-сайт CButtonList::Draw
+0x57CFEE: рекорд kind=3 (56 Б: cursor [screen+0xe0/e4], rect array[i]+0x14,
+i, флаги) для диагностики колеса (docs/09, доп. 0.0.11); dedup по смене i.
+cave 2379/2474, capstone 569, тесты T1–T9 (81 проверка).
 """
 import argparse
 import hashlib
@@ -97,6 +102,10 @@ MARK_MASK   = 0x0C
 DEBUG = True
 SITE_H8 = ("H8", 0x58F690, "8b4424048b10", 6)    # set_rect prologue
 SITE_H9 = ("H9", 0x5912E0, "8b44240853", 5)      # OnLayoutChange prologue
+# H11 (0.0.11): hover-сайт CButtonList::Draw — пишется [esi+0x28c]=edi при попадании
+# PtInRect(array[i]+0x14, cursor[screen+0xe0/e4]); лог kind=3 (cursor+rect+i+флаги).
+SITE_H11 = ("H11", 0x57CFEE, "89be8c020000", 6)
+RET_H11 = 0x57CFF4
 RET_OLC = 0x5912E5
 RET_SETRECT = 0x58F696
 IAT_CREATEFILEA = 0x756270
@@ -112,6 +121,7 @@ IAT_WRITEFILE   = 0x75617C
 # брать их нельзя.
 VA_LOG_FLAG   = 0x830040   # 0 = первое событие сессии: CREATE_ALWAYS (усечь лог), далее 1
 VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
+VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
 
@@ -136,7 +146,7 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 # (--debug, H8/H9). См. docs/09 §4 (v4 post-mortem).
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9] if DEBUG else [])
+                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11] if DEBUG else [])
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
 # Извлечены из setter'а 0x53db8c..0x53de78 (имmediates). Пары/четвёрки трактуются
@@ -862,6 +872,50 @@ def build_evt_setrect(va, env):
     return bytes(a.b)
 
 
+def build_evt_hover(va, env):
+    """H11 (0.0.11): сайт hover-попадания CButtonList::Draw 0x57CFEE (6 байт:
+    mov [esi+0x28c], edi — пишется индекс кнопки при PtInRect(array[i]+0x14,
+    cursor), где cursor = [screen+0xe0]/[screen+0xe4] один раз на Draw).
+    Лог kind=3 (56 Б, свой stride): this, vtable, i, cursor(x,y), rect
+    array[i]+0x14 (LTRB), флаги [+0x14c]. Dedup: пишем только при смене i
+    (свой dword VA_LOG_LASTI) — иначе hover каждый кадр съел бы DBG_CAP.
+    Украденные байты + jmp 0x57CFF4. Регистры — под pushad."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    a.mov_r_abs32('eax', VA_LOG_LASTI)
+    a.cmp_rr('eax', 'edi')
+    a.je('skip')                       # тот же индекс — не логируем повторно
+    a.mov_mem_abs('edi', VA_LOG_LASTI)
+    a.sub_esp(56)
+    a.mov_r_imm('eax', 3);              a.mov_mem_r('esp', 0, 'eax')
+    a.mov_mem_r('esp', 4, 'esi')
+    a.mov_r_mem('eax', 'esi', 0);       a.mov_mem_r('esp', 8, 'eax')
+    a.mov_r_imm('eax', 0x57CFEE);       a.mov_mem_r('esp', 12, 'eax')
+    a.mov_mem_r('esp', 16, 'edi')
+    a.mov_r_mem('eax', 'esp', 0x88);    a.mov_mem_r('esp', 20, 'eax')  # cursor X = frame[0x30]
+    a.mov_r_mem('eax', 'esp', 0x8C);    a.mov_mem_r('esp', 24, 'eax')  # cursor Y = frame[0x34]
+    a.mov_r_mem('eax', 'esi', 0x1c0)
+    a.add_rr('eax', 'ebx')
+    a.add_eax_imm32(0x14)               # rect = array + i*0x34 + 0x14
+    a.mov_r_mem('ecx', 'eax', 0);       a.mov_mem_r('esp', 28, 'ecx')
+    a.mov_r_mem('ecx', 'eax', 4);       a.mov_mem_r('esp', 32, 'ecx')
+    a.mov_r_mem('ecx', 'eax', 8);       a.mov_mem_r('esp', 36, 'ecx')
+    a.mov_r_mem('ecx', 'eax', 0xc);     a.mov_mem_r('esp', 40, 'ecx')
+    a.mov_r_mem('ecx', 'esi', 0x14c);   a.mov_mem_r('esp', 44, 'ecx')
+    a.mov_r_imm('eax', env['evt_str'])
+    a.lea_r_mem('edx', 'esp', 0)
+    a.mov_r_imm('ecx', 56)
+    a.call_va(W)
+    a.add_esp(56)
+    a.L('skip')
+    a.popad()
+    a.mov_mem_r('esi', 0x28c, 'edi')    # украденные байты сайта
+    a.jmp32(RET_H11)
+    a.resolve()
+    return bytes(a.b)
+
+
 def build_evt_olc(va, env):
     """H9: пролог OnLayoutChange 0x5912e0 (5 байт: mov eax,[esp+8]; push ebx):
     лог (dShX,dShY,dX,dY) + украденные + jmp 0x5912e5."""
@@ -905,7 +959,7 @@ def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
              'rowl_stub', 'sel_stub')
-            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_str') if DEBUG else ()))
+            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover', 'evt_str') if DEBUG else ()))
 
 
 DATA_PARTS = {'savefix_tbl', 'evt_str'}
@@ -923,7 +977,7 @@ def layout_parts():
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
         'sel_stub': build_selstub,
         'evt_write': build_evt_write, 'evt_setrect': build_evt_setrect,
-        'evt_olc': build_evt_olc,
+        'evt_olc': build_evt_olc, 'evt_hover': build_evt_hover,
         'evt_str': build_evt_str,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
@@ -988,7 +1042,8 @@ def make_patched(d, parts, va):
              (SITE_H4, 'add_stub'), (SITE_H5A, 'draw_stub'), (SITE_H5B, 'rowl_stub'),
              (SITE_H6, 'sel_stub'))
     if DEBUG:
-        pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'))
+        pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
+                  (SITE_H11, 'evt_hover'))
     for (name, site_va, _want, size), part in pairs:
         rel = va[part] - (site_va + 5)
         rep = b'\xE9' + _p32(rel) + b'\x90' * (size - 5)
@@ -1017,7 +1072,8 @@ def verify_disasm(parts, va, listing=False):
     from capstone import Cs, CS_ARCH_X86, CS_MODE_32
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
-               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, VA_ITER, VA_DRAWBASE} | set(va.values())
+               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
+               VA_ITER, VA_DRAWBASE} | set(va.values())
     n_ins = 0
     for name in part_order():
         blob = parts[name]
@@ -1563,6 +1619,61 @@ def emu_tests(patched_img, va):
         chk("T8.3 cap: CreateFileA не вызван", m.r32(SLOT_DISP), 0xBEEF)
         chk("T8.3 cap: count=DBG_CAP+1", m.r32(VA_LOG_COUNT), DBG_CAP + 1)
         chk("T8.3 cap: esp balance", cpu.r['esp'], esp0 + 4)
+
+    # --- T9: evt_hover (H11) — рекорд kind=3: cursor+rect+i+флаги, dedup по i
+    if 'evt_hover' not in va:
+        print("test T9: пропущен (release-сборка без логгера)")
+    else:
+        print("test T9: evt_hover (hover-сайт CButtonList: cursor+rect, dedup)")
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.w32(IAT_CREATEFILEA, STUBS)
+        m.w32(IAT_WRITEFILE, STUBS + 32)
+        m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        ctrl, arr = HEAP + 0x5000, HEAP + 0x6000
+        m.w32(ctrl + 0x0, 0x75D498)                 # vtable CButtonList
+        m.w32(ctrl + 0x1c0, arr)
+        for j, v in enumerate((1200, 700, 1300, 780)):
+            m.w32(arr + 0x34 + 0x14 + 4 * j, v)     # rect кнопки i=1
+        m.w32(ctrl + 0x14c, 0xF05FFFF6)
+        m.w32(ctrl + 0x28c, 0xFFFFFFFF)
+        m.w32(VA_LOG_LASTI, 0)
+        m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        m.w32(esp0 + 0x30, 1550)                    # cursor X (frame[0x30])
+        m.w32(esp0 + 0x34, 810)                     # cursor Y
+        cpu.r.update(esi=ctrl, edi=1, ebx=0x34, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
+        cpu.run(va['evt_hover'], RET_H11)
+        b = esp0 - 88                               # рекорд на стеке
+        chk("T9 kind=3", m.r32(b + 0), 3)
+        chk("T9 this", m.r32(b + 4), ctrl)
+        chk("T9 vtable", m.r32(b + 8), 0x75D498)
+        chk("T9 ret-маркер сайта", m.r32(b + 12), 0x57CFEE)
+        chk("T9 i", m.r32(b + 16), 1)
+        chk("T9 cursor=(1550,810)", (m.r32(b + 20), m.r32(b + 24)), (1550, 810))
+        chk("T9 rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
+            [1200, 700, 1300, 780])
+        chk("T9 флаги [+0x14c]", m.r32(b + 44), 0xF05FFFF6)
+        chk("T9 stolen: [esi+0x28c]=i", m.r32(ctrl + 0x28c), 1)
+        chk("T9 WriteFile len=56", m.r32(SLOT_LEN), 56)
+        chk("T9 regs preserved", (cpu.r['esi'], cpu.r['edi'], cpu.r['ebx']),
+            (ctrl, 1, 0x34))
+        chk("T9 esp balance", cpu.r['esp'], esp0)
+        # dedup: тот же i повторно — записи нет
+        m.w32(SLOT_LEN, 0)
+        cpu.r.update(esi=ctrl, edi=1, ebx=0x34, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
+        cpu.run(va['evt_hover'], RET_H11)
+        chk("T9 dedup: повторный i не пишется", m.r32(SLOT_LEN), 0)
+        chk("T9 dedup: esp balance", cpu.r['esp'], esp0)
 
     return ok
 
