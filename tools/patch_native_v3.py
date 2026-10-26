@@ -9,7 +9,7 @@ patch_native_v3.py — сборщик native v3 для Etherlords.exe (Деми�
 
 Причина (docs/09 §2): пост-проход v2 масштабирует только те контролы, которые
 уже лежат в списке менеджера [0x82b968] на момент apply_layout (т.е. созданные
-при Init). Контролы, создаваемые ЛЕНТIVO позже (кнопки колеса/скроллы adv-экрана,
+при Init). Контролы, создаваемые лениво позже (кнопки колеса/скроллы adv-экрана,
 клоны диалогов, списки сохранений — «FindControl-or-create» и new в коде экранов),
 остаются в design-координатах, тогда как цепочка родителей уже масштабирована:
 draw идёт по абсолютным design-rect'ам визуала, а hit-test суммирует
@@ -38,9 +38,14 @@ ctor пишет nibble=0xF (0x58f2cf), apply_flag — 1/2, поэтому 0x4..0
 игре не возникают; бит 0x8 не используем (входит в 0xF ctor'а).
 
 Сборка/проверка как в v2: контрольные байты сайтов, capstone-аудит cave, аудит
-диффа, интерпретатор i386 (тесты T1..T7).
+диффа, интерпретатор i386 (тесты T1..T7 + T3b/T5c/T6b — 56 проверок).
 
-    python3 tools/patch_native_v3.py Etherlords.exe   # -> Etherlords_native_v3.exe
+    python3 tools/patch_native_v3.py Etherlords.exe          # release -> Etherlords_native_v6.exe
+    python3 tools/patch_native_v3.py Etherlords.exe --debug  # -> v6dbg + лог el_evt.log (H8/H9)
+
+0.0.6: release — по умолчанию (логгер выключен); --debug собирает логгер
+set_rect/OnLayoutChange (H8/H9, как полевая v5dbg). H10 (evt_hit) удалён —
+не вмещался в cave (см. docs/09, доп. 0.0.6).
 """
 import argparse
 import hashlib
@@ -70,23 +75,20 @@ VA_DRAWBASE = 0x5905D0                   # базовый Draw (украденн
 VTBL_BUTTONLIST = 0x75D498               # CButtonList: спрайт-массив rect'ов
 MARK_MASK   = 0x0C
 
-# логгер событий set_rect / OnLayoutChange / hit-test(маски) — ВСЕГДА в сборках
-# (полевая практика v5dbg: канарейка+лог не мешают, но экономят итерацию).
-# --no-logger собирает чистый release без хуков H8/H9/H10 и канарейки.
-DEBUG = True
+# логгер событий set_rect / OnLayoutChange — ТОЛЬКО debug-сборка (--debug, H8/H9,
+# как полевая v5dbg): el_evt.log в cwd игры, разбор tools/decode_evtlog.py.
+# H10 (evt_hit, логгер hit-test-масок) в 0.0.6 УДАЛЁН: с ним cave переполнялся
+# (2507 > 2474) и сборка по умолчанию падала; в полевых билдах он не бывал
+# (test/Etherlords_native_v5dbg.exe собран без хука на 0x58fb70). Возврат —
+# только вместе с расширением cave (новая PE-секция). См. docs/09, доп. 0.0.6.
+DEBUG = False
 SITE_H8 = ("H8", 0x58F690, "8b4424048b10", 6)    # set_rect prologue
 SITE_H9 = ("H9", 0x5912E0, "8b44240853", 5)      # OnLayoutChange prologue
 RET_OLC = 0x5912E5
 RET_SETRECT = 0x58F696
-SITE_H10 = ("H10", 0x58FB70, "83ec54538b5c2460", 8)   # hit-test prologue
-RET_HIT = 0x58FB78
 IAT_CREATEFILEA = 0x756270
-IAT_GETMODULEFILENAMEA = 0x7562F0
 IAT_CLOSEHANDLE = 0x7560D0
 IAT_WRITEFILE   = 0x75617C
-VA_DBG_HANDLE   = 0x829764   # unused .data dword: handle лога
-VA_DBG_COUNT    = 0x829768   # unused .data dword: счётчик событий
-DBG_CAP         = 20000                       # bits 2..3 nibble [+0x14c]
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -110,7 +112,7 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 # (--debug, H8/H9). См. docs/09 §4 (v4 post-mortem).
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H10] if DEBUG else [])
+                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9] if DEBUG else [])
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
 # Извлечены из setter'а 0x53db8c..0x53de78 (имmediates). Пары/четвёрки трактуются
@@ -727,10 +729,6 @@ def build_evt_str(va, env):
     return b"el_evt.log\x00"
 
 
-def build_evt_str2(va, env):
-    return b"EL_DEBUG_ON.log\x00"
-
-
 def build_evt_write(va, env):
     """evt_write(eax=name_z, edx=buf, ecx=len): CreateFileA(OPEN_ALWAYS,
     FILE_APPEND_DATA) -> WriteFile -> CloseHandle, без кэша и глобалов
@@ -770,78 +768,6 @@ def build_evt_write(va, env):
     a.pop_r('esi')
     a.pop_r('ebx')
     a.ret()
-    a.resolve()
-    return bytes(a.b)
-
-
-def build_evt_hit(va, env):
-    """H10: пролог hit-test 0x58fb70 (8 байт: sub esp,0x54; push ebx;
-    mov ebx,[esp+0x60]): для контролов с маской (+0x150!=0) и маркером пишет
-    рекорд kind=3: this, vtable, x, y, +0x164[4], +0x174[4], rect obj+0x40[4]
-    первого спрайта визуала (пространство отрисовки) — прямое сравнение
-    hit- и draw-координат. Объем: только hover по масочным контролам."""
-    W = env['evt_write']
-    a = Asm(va)
-    a.push_r('ecx')
-    a.pushad()
-    a.mov_r_mem('eax', 'ecx', 0x150)             # маска есть?
-    a.test_rr('eax', 'eax'); a.jz('skip')
-    a.mov_r_mem('eax', 'ecx', 0x14c)             # помечен?
-    a.and_eax_u8(0x0F)
-    a.and_eax_u8(0x0C)
-    a.cmp_eax_u8(MARK_SCALED); a.jne('skip')
-    a.sub_esp(84)
-    a.mov_mem_imm('esp', 0, 3)                   # kind
-    a.mov_mem_r('esp', 4, 'ecx')                 # this
-    a.mov_r_mem('eax', 'ecx', 0)
-    a.mov_mem_r('esp', 8, 'eax')                 # vtable
-    a.mov_r_mem('eax', 'esp', 0x54 + 4)          # x = [E+4]
-    a.mov_mem_r('esp', 12, 'eax')
-    a.mov_r_mem('eax', 'esp', 0x54 + 8)          # y = [E+8]
-    a.mov_mem_r('esp', 16, 'eax')
-    a.mov_r_mem('eax', 'ecx', 0x34)              # parent
-    a.test_rr('eax', 'eax'); a.jz('nopar')
-    for j in range(4):
-        a.mov_r_mem('edx', 'eax', 0x154 + 4 * j)
-        a.mov_mem_r('esp', 20 + 4 * j, 'edx')
-    a.jmp32('parok')
-    a.L('nopar')
-    for j in range(4):
-        a.mov_mem_imm('esp', 20 + 4 * j, 0)
-    a.L('parok')
-    for j in range(4):
-        a.mov_r_mem('eax', 'ecx', 0x174 + 4 * j)
-        a.mov_mem_r('esp', 36 + 4 * j, 'eax')
-    # obj+0x40 первого спрайта визуала (цепочка как в scale_one)
-    a.mov_r_mem('eax', 'ecx', 0x148)
-    a.test_rr('eax', 'eax'); a.jz('noobj')
-    a.mov_r_mem('eax', 'eax', 0)
-    a.mov_r_mem('eax', 'eax', 8)
-    a.mov_r_mem('eax', 'eax', 0x14)
-    a.mov_r_mem('eax', 'eax', 0)
-    a.mov_r_mem('eax', 'eax', 8)
-    a.mov_r_mem('eax', 'eax', 0x10)
-    a.test_rr('eax', 'eax'); a.jz('noobj')
-    for j in range(4):
-        a.mov_r_mem('edx', 'eax', 0x40 + 4 * j)
-        a.mov_mem_r('esp', 52 + 4 * j, 'edx')
-    a.jmp32('havobj')
-    a.L('noobj')
-    for j in range(4):
-        a.mov_mem_imm('esp', 52 + 4 * j, 0)
-    a.L('havobj')
-    a.mov_r_imm('eax', env['evt_str'])
-    a.lea_r_mem('edx', 'esp', 0)
-    a.mov_r_imm('ecx', 68)
-    a.call_va(W)
-    a.add_esp(84)
-    a.L('skip')
-    a.popad()
-    a.pop_r('ecx')
-    a.sub_esp(0x54)                              # украденные
-    a.push_r('ebx')
-    a.mov_r_mem('ebx', 'esp', 0x60)
-    a.jmp32(RET_HIT)
     a.resolve()
     return bytes(a.b)
 
@@ -928,7 +854,7 @@ def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
              'rowl_stub', 'sel_stub')
-            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hit', 'evt_str') if DEBUG else ()))
+            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_str') if DEBUG else ()))
 
 
 DATA_PARTS = {'savefix_tbl', 'evt_str'}
@@ -937,7 +863,7 @@ DATA_PARTS = {'savefix_tbl', 'evt_str'}
 def layout_parts():
     env0 = {'scale_rect': CAVE_VA, 'scale_one': CAVE_VA, 'savefix': CAVE_VA,
             'savefix_tbl': CAVE_VA, 'post_done': CAVE_VA, 'evt_write': CAVE_VA,
-            'evt_str': CAVE_VA, 'evt_str2': CAVE_VA}
+            'evt_str': CAVE_VA}
     builders = {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
         'scale_rect': build_scale_rect, 'scale_one': build_scale_one,
@@ -946,7 +872,7 @@ def layout_parts():
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
         'sel_stub': build_selstub,
         'evt_write': build_evt_write, 'evt_setrect': build_evt_setrect,
-        'evt_olc': build_evt_olc, 'evt_hit': build_evt_hit,
+        'evt_olc': build_evt_olc,
         'evt_str': build_evt_str,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
@@ -1011,8 +937,7 @@ def make_patched(d, parts, va):
              (SITE_H4, 'add_stub'), (SITE_H5A, 'draw_stub'), (SITE_H5B, 'rowl_stub'),
              (SITE_H6, 'sel_stub'))
     if DEBUG:
-        pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
-                  (SITE_H10, 'evt_hit'))
+        pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'))
     for (name, site_va, _want, size), part in pairs:
         rel = va[part] - (site_va + 5)
         rep = b'\xE9' + _p32(rel) + b'\x90' * (size - 5)
@@ -1041,7 +966,7 @@ def verify_disasm(parts, va, listing=False):
     from capstone import Cs, CS_ARCH_X86, CS_MODE_32
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
-               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_HIT, VA_ITER, VA_DRAWBASE} | set(va.values())
+               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, VA_ITER, VA_DRAWBASE} | set(va.values())
     n_ins = 0
     for name in part_order():
         blob = parts[name]
@@ -1527,22 +1452,21 @@ def emu_tests(patched_img, va):
 
 # ----------------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="native v3 patcher (docs/09)")
+    ap = argparse.ArgumentParser(description="native v3..v6 patcher (docs/09)")
     ap.add_argument("src", nargs="?", default="Etherlords.exe")
     ap.add_argument("--out", default=None)
     ap.add_argument("--check", action="store_true", help="только проверка применимости")
     ap.add_argument("--listing", action="store_true", help="печатать дизассемблер cave")
     ap.add_argument("--no-emu", action="store_true", help="пропустить функциональные тесты")
     ap.add_argument("--debug", action="store_true",
-                    help="(синоним прежнего режима; логгер теперь включён всегда)")
-    ap.add_argument("--no-logger", action="store_true",
-                    help="чистый release: без H8/H9/H10 и канарейки")
+                    help="debug-сборка (v6dbg): логгер set_rect/OnLayoutChange (H8/H9) "
+                         "пишет el_evt.log в cwd игры; разбор tools/decode_evtlog.py")
     args = ap.parse_args()
     global DEBUG
-    DEBUG = not args.no_logger
+    DEBUG = args.debug
 
     if args.out is None:
-        args.out = "Etherlords_native_v7.exe"
+        args.out = "Etherlords_native_v6dbg.exe" if DEBUG else "Etherlords_native_v6.exe"
     d = open(args.src, "rb").read()
     print(f"source : {args.src}  {len(d)} bytes  sha256={hashlib.sha256(d).hexdigest()[:16]}")
 
