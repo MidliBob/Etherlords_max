@@ -38,8 +38,14 @@ ctor пишет nibble=0xF (0x58f2cf), apply_flag — 1/2, поэтому 0x4..0
 игре не возникают; бит 0x8 не используем (входит в 0xF ctor'а).
 
 Сборка/проверка как в v2: контрольные байты сайтов, capstone-аудит cave, аудит
-диффа, интерпретатор i386 (тесты T1..T7 + T3b/T5c/T6b — 56 проверок; с 0.0.8
-прогоняются для ЛЮБОЙ сборки — логгер-стабы в тестах не исполняются).
+диффа, интерпретатор i386 (тесты T1..T8 — 67 проверок в сборке с логгером;
+с 0.0.8 прогоняются для ЛЮБОЙ сборки — логгер-стабы в тестах не исполняются).
+
+БЫСТРЫЙ ЗАПУСК (0.0.9): положите этот скрипт в папку игры и запустите (двойной
+клик или `python patch_native_v3.py`) — найдёт Etherlords.exe рядом (или в CWD),
+создаст рядом Etherlords_native_v6dbg.exe; игру запускайте этим файлом
+(переименований не нужно, оригинал не трогается). Нужны Python 3.8+ и capstone.
+На Windows при запуске без аргументов окно не закроется сразу (пауза).
 
     python3 tools/patch_native_v3.py Etherlords.exe               # -> Etherlords_native_v6dbg.exe (с логгером)
     python3 tools/patch_native_v3.py Etherlords.exe --no-logger   # -> Etherlords_native_v6.exe (чистый release)
@@ -55,6 +61,7 @@ dword'ы .data 0x830040/0x830044 (НЕ 0x829764/68 из docs/09 §3 — они �
 """
 import argparse
 import hashlib
+import os
 import struct
 import sys
 
@@ -1561,9 +1568,32 @@ def emu_tests(patched_img, va):
 
 
 # ----------------------------------------------------------------------- main
+def _pause_win():
+    """Двойной клик на Windows: не закрывать окно сразу (виден результат/ошибка)."""
+    if sys.platform == "win32":
+        try:
+            input("\nНажмите Enter, чтобы закрыть окно...")
+        except (EOFError, OSError):
+            pass
+
+
+def _resolve_src(arg):
+    """(src, from_default). Без аргумента ищем Etherlords.exe в CWD, затем рядом
+    со скриптом — сценарий 0.0.9: скрипт кладётся в папку игры и запускается
+    (двойным кликом или `python patch_native_v3.py`)."""
+    if arg:
+        return arg, False
+    here = os.path.dirname(os.path.abspath(__file__))
+    for c in ("Etherlords.exe", os.path.join(here, "Etherlords.exe")):
+        if os.path.isfile(c):
+            return c, True
+    return "Etherlords.exe", True
+
+
 def main():
     ap = argparse.ArgumentParser(description="native v3..v6 patcher (docs/09)")
-    ap.add_argument("src", nargs="?", default="Etherlords.exe")
+    ap.add_argument("src", nargs="?", default=None,
+                    help="путь к Etherlords.exe (по умолчанию: ищется в CWD или рядом со скриптом)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--check", action="store_true", help="только проверка применимости")
     ap.add_argument("--listing", action="store_true", help="печатать дизассемблер cave")
@@ -1576,10 +1606,21 @@ def main():
     global DEBUG
     DEBUG = not args.no_logger
 
+    src, from_default = _resolve_src(args.src)
+    if not os.path.isfile(src):
+        print("Etherlords.exe НЕ НАЙДЕН.")
+        print("Быстрый запуск: положите patch_native_v3.py в папку игры (рядом с")
+        print("Etherlords.exe) и запустите его; либо укажите путь явно:")
+        print("    python3 patch_native_v3.py /путь/к/Etherlords.exe")
+        sys.exit(2)
+
     if args.out is None:
-        args.out = "Etherlords_native_v6dbg.exe" if DEBUG else "Etherlords_native_v6.exe"
-    d = open(args.src, "rb").read()
-    print(f"source : {args.src}  {len(d)} bytes  sha256={hashlib.sha256(d).hexdigest()[:16]}")
+        name = "Etherlords_native_v6dbg.exe" if DEBUG else "Etherlords_native_v6.exe"
+        # быстрый запуск (src найден автоматически): сборка — рядом с игрой;
+        # явный путь src: как раньше, в каталог запуска (или --out).
+        args.out = os.path.join(os.path.dirname(os.path.abspath(src)), name) if from_default else name
+    d = open(src, "rb").read()
+    print(f"source : {src}  {len(d)} bytes  sha256={hashlib.sha256(d).hexdigest()[:16]}")
 
     print("\n[1/4] контрольные байты сайтов:")
     if not check_sites(d):
@@ -1615,9 +1656,19 @@ def main():
 
     open(args.out, "wb").write(img)
     print(f"\nwrote {args.out}  {len(img)} bytes  sha256={hashlib.sha256(img).hexdigest()[:16]}")
-    print("Приёмка (docs/09 §5): главное меню, меню сохранения/загрузки, глобальная")
-    print("карта (колесо команд: hover/click секторов и центра), бой. Откат — бэкап.")
+    if from_default:
+        print(f"Запускайте игру через {os.path.basename(args.out)} (из папки игры).")
+        print("Оригинальный Etherlords.exe не тронут — он же откат; переименований не нужно.")
+        print("После запуска в папке игры появится el_evt.log (последний сеанс) —")
+        print("при проблемах с UI пришлите его (разбор: tools/decode_evtlog.py).")
+    else:
+        print("Приёмка (docs/09 §5): главное меню, меню сохранения/загрузки, глобальная")
+        print("карта (колесо команд: hover/click секторов и центра), бой. Откат — бэкап.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        if len(sys.argv) == 1:       # двойной клик / запуск без аргументов
+            _pause_win()
