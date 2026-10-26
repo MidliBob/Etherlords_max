@@ -39,11 +39,13 @@
 │   ├── patch_native_v2.py          сборщик native v2 -> Etherlords_native_v2.exe: cave
 │   │                               (трамплин W/H + пост-проход RECT'ов + mask-fix), встроенная
 │   │                               верификация: capstone-аудит, дифф-аудит, интерпретатор T1–T4
-│   ├── patch_native_v3.py          ★ СБОРЩИК native v3–v6 -> Etherlords_native_v6.exe:
-│   │                               хуки P1/H1–H6 (scale-on-create + маркер, спрайты
-│   │                               CButtonList, design-константы меню сохранений, рамка
-│   │                               CSelectMission, глобалы adv 0x827e70/80), верификация:
-│   │                               capstone-аудит, дифф-аудит, интерпретатор T1–T8 (67 проверок);
+│   ├── patch_native_v3.py          ★ СБОРЩИК native v3–v6; БЫСТРЫЙ ЗАПУСК (0.0.9): положить
+│   │                               в папку игры -> создаст Etherlords_native_v6dbg.exe рядом
+│   │                               с игровым exe, игру запускать им. Хуки P1/H1–H6
+│   │                               (scale-on-create + маркер, спрайты CButtonList,
+│   │                               design-константы меню сохранений, рамка CSelectMission,
+│   │                               глобалы adv 0x827e70/80), верификация: capstone-аудит,
+│   │                               дифф-аудит, интерпретатор T1–T8 (67 проверок);
 │   │                               логгер H8/H9 (el_evt.log) — в каждой сборке по умолчанию,
 │   │                               --no-logger -> чистый release v6
 │   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange)
@@ -64,30 +66,44 @@
                          репозитория в 0.0.6, лежат в истории git — см. внутри)
 ```
 
-## Быстрый старт (безопасный базис)
+## Быстрый старт — native v6
 
-Даёт рабочие кнопки и раскладку 1024x768 на любом разрешении (UI не растянут, но жив):
+1. Скопируйте `tools/patch_native_v3.py` **в папку игры** (где лежит
+   `Etherlords.exe`).
+2. Запустите его — двойным кликом или из консоли: `python patch_native_v3.py`.
+   Скрипт найдёт `Etherlords.exe` рядом (или в текущем каталоге), сверит с
+   анализируемым билдом (рус. 1.07, sha256 `409d3e08…`), прогонит самотесты и
+   создаст рядом **`Etherlords_native_v6dbg.exe`**.
+3. **Запускайте игру через `Etherlords_native_v6dbg.exe`** — переименований и
+   замен файлов не нужно: оригинальный `Etherlords.exe` не трогается (он же
+   откат). В `settings.ini` выставьте своё `VideoResolution=WxH` (например,
+   1600x900).
 
-```bash
-pip install pefile capstone
-python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_layout1024.exe
-# сделать бэкап своего Etherlords.exe и положить результат под его именем
-```
+Нужны Python 3.8+ и `pip install capstone`. На Windows при запуске двойным
+кликом окно не закроется сразу — виден результат и ошибки самотестов.
 
-Экспериментальный native v6 (масштабирование UI под любое разрешение; собиратель
-верифицирован статически и тестами, фикс колеса ЖДЁТ полевой приемки на Windows —
-протокол в `docs/09` §5). С 0.0.8 **каждая сборка по умолчанию содержит debug-
-логгер** (el_evt.log): в репозитории нет исходного бинарника, и полевой лог —
-основной канал данных для итераций:
+Каждая сборка с 0.0.8 содержит debug-логгер: после запуска в папке игры
+появляется `el_evt.log` (последний сеанс, ≤ ~880 КБ). Если UI съезжает/кнопки
+не работают — пришлите этот файл (разбор:
+`python3 tools/decode_evtlog.py el_evt.log [vtable]`). Фикс колеса ждёт полевой
+приемки — протокол в `docs/09` §5.
+
+Из корня репозитория (полный CLI; `--out` — свой путь, `--check` — только
+проверка, `--no-logger` — чистый release `Etherlords_native_v6.exe`):
 
 ```bash
 python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe               # -> Etherlords_native_v6dbg.exe (с логгером)
 python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --no-logger   # -> Etherlords_native_v6.exe (чистый release)
 ```
 
-Логгер не требует действий: `el_evt.log` (cwd игры) перезаписывается при каждом
-запуске и ограничен 20000 рекордов (~880 КБ). После прогона пришлите его —
-разбор `python3 tools/decode_evtlog.py el_evt.log [vtable]`.
+## Безопасный базис (раскладка 1024x768, без масштабирования)
+
+Даёт рабочие кнопки и раскладку 1024x768 на любом разрешении (UI не растянут, но жив):
+
+```bash
+python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_layout1024.exe
+# сделать бэкап своего Etherlords.exe и положить результат под его именем
+```
 
 ## Статус native (v6 — актуальный)
 
