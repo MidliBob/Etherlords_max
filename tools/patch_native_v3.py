@@ -62,7 +62,14 @@ dword'ы .data 0x830040/0x830044 (НЕ 0x829764/68 из docs/09 §3 — они �
 0.0.11: debug-сборка ДОПОЛНИТЕЛЬНО хукает H11 — hover-сайт CButtonList::Draw
 0x57CFEE: рекорд kind=3 (56 Б: cursor [screen+0xe0/e4], rect array[i]+0x14,
 i, флаги) для диагностики колеса (docs/09, доп. 0.0.11); dedup по смене i.
-cave 2379/2474, capstone 569, тесты T1–T9 (81 проверка).
+
+0.0.13: + H12 — mouse-handler колеса CAdvScreen 0x50F5B4: рекорд kind=4
+(44 Б: cursor, active [+0x1ac/+0x1b0], sector0 [+0x208/+0x20c]); найденная
+механика hover колеса: локальный курсор = cursor − active, сравнение с
+массивом секторов [+0x208], который scale_one НЕ масштабирует (docs/09,
+доп. 0.0.13). Debug-раскладка выровнена по 4 (release — по-прежнему 16,
+release байт-в-байт прежний: sha256 5ad61f0e…). Debug: cave 2439/2474,
+capstone 604, тесты T1–T10 (96 проверок), sha256 24e0c3f87d128129….
 """
 import argparse
 import hashlib
@@ -106,6 +113,15 @@ SITE_H9 = ("H9", 0x5912E0, "8b44240853", 5)      # OnLayoutChange prologue
 # PtInRect(array[i]+0x14, cursor[screen+0xe0/e4]); лог kind=3 (cursor+rect+i+флаги).
 SITE_H11 = ("H11", 0x57CFEE, "89be8c020000", 6)
 RET_H11 = 0x57CFF4
+# H12 (0.0.13): mouse-handler CAdvScreen 0x50f5b4 (6 байт: mov edi,[esi+0x1b0]) —
+# точка, где курсор (eax,edx) превращается в локальный (cursor − active[+0x1ac/+0x1b0])
+# и далее сравнивается с массивом секторов [+0x208] (НЕ масштабируется scale_one).
+# Рекорд kind=4: cursor, active, sector0(L,T). Именно здесь живёт hover колеса,
+# если H11 (CButtonList::Draw) молчит (docs/09, доп. 0.0.13).
+SITE_H12 = ("H12", 0x50F5B4, "8bbeb0010000", 6)
+RET_H12 = 0x50F5BA
+VA_LOG_LASTX  = 0x83004C   # H12 dedup: последний курсор (x,y)
+VA_LOG_LASTY  = 0x830050
 RET_OLC = 0x5912E5
 RET_SETRECT = 0x58F696
 IAT_CREATEFILEA = 0x756270
@@ -124,7 +140,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.12"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.13"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -148,7 +164,8 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 # (--debug, H8/H9). См. docs/09 §4 (v4 post-mortem).
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11] if DEBUG else [])
+                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
+                                                        SITE_H12] if DEBUG else [])
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
 # Извлечены из setter'а 0x53db8c..0x53de78 (имmediates). Пары/четвёрки трактуются
@@ -835,6 +852,50 @@ def build_evt_write(va, env):
     return bytes(a.b)
 
 
+def build_evt_wheel(va, env):
+    """H12 (0.0.13): пролог mouse-handler'а колеса 0x50F5B4 (6 байт:
+    mov edi,[esi+0x1b0]). В этой точке eax/edx = курсор (предположительно
+    native), [esi+0x1ac]/[esi+0x1b0] = active-точка (масштабируется scale_one),
+    [esi+0x208..] = массив rect'ов секторов колеса (НЕ масштабируется).
+    Рекорд kind=4 (44 Б): this, ret-маркер сайта, cursor(x,y), active(x,y),
+    sector0(L,T). Dedup по совпадению (x,y) с прошлым (VA_LOG_LASTX/Y).
+    Украденные байты + jmp 0x50F5BA."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    a.mov_r_abs32('ecx', VA_LOG_LASTX)
+    a.cmp_rr('eax', 'ecx')
+    a.jne('log')
+    a.mov_r_abs32('ecx', VA_LOG_LASTY)
+    a.cmp_rr('edx', 'ecx')
+    a.je('skip')
+    a.L('log')
+    a.mov_mem_abs('eax', VA_LOG_LASTX)
+    a.mov_mem_abs('edx', VA_LOG_LASTY)
+    a.sub_esp(44)
+    a.mov_r_imm('ecx', 4);             a.mov_mem_r('esp', 0, 'ecx')
+    a.mov_mem_r('esp', 4, 'esi')
+    a.mov_r_imm('ecx', 0x50F5B4);      a.mov_mem_r('esp', 8, 'ecx')
+    a.mov_mem_imm('esp', 12, 0)
+    a.mov_mem_r('esp', 16, 'eax')
+    a.mov_mem_r('esp', 20, 'edx')
+    a.mov_r_mem('ecx', 'esi', 0x1ac);  a.mov_mem_r('esp', 24, 'ecx')
+    a.mov_r_mem('ecx', 'esi', 0x1b0);  a.mov_mem_r('esp', 28, 'ecx')
+    a.mov_r_mem('ecx', 'esi', 0x208);  a.mov_mem_r('esp', 32, 'ecx')
+    a.mov_r_mem('ecx', 'esi', 0x20c);  a.mov_mem_r('esp', 36, 'ecx')
+    a.mov_r_imm('eax', env['evt_str'])
+    a.lea_r_mem('edx', 'esp', 0)
+    a.mov_r_imm('ecx', 44)
+    a.call_va(W)
+    a.add_esp(44)
+    a.L('skip')
+    a.popad()
+    a.mov_r_mem('edi', 'esi', 0x1b0)   # украденные байты сайта
+    a.jmp32(RET_H12)
+    a.resolve()
+    return bytes(a.b)
+
+
 def build_evt_setrect(va, env):
     """H8: пролог set_rect 0x58f690 (6 байт): лог + украденные mov eax,[esp+4];
     mov edx,[eax]; jmp 0x58f696. this=ecx, rect*=[esp+4], ret=[esp]."""
@@ -962,7 +1023,8 @@ def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
              'rowl_stub', 'sel_stub')
-            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover', 'evt_str') if DEBUG else ()))
+            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover', 'evt_wheel',
+                 'evt_str') if DEBUG else ()))
 
 
 DATA_PARTS = {'savefix_tbl', 'evt_str'}
@@ -981,6 +1043,7 @@ def layout_parts():
         'sel_stub': build_selstub,
         'evt_write': build_evt_write, 'evt_setrect': build_evt_setrect,
         'evt_olc': build_evt_olc, 'evt_hover': build_evt_hover,
+        'evt_wheel': build_evt_wheel,
         'evt_str': build_evt_str,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
@@ -995,7 +1058,11 @@ def layout_parts():
     off = 0
     va = {}
     for name in order:
-        off = (off + 15) & ~15
+        # 0.0.13: debug-раскладка выравнивается по 4 (x86 не требует 16) —
+        # экономия ~80 байт cave под H12; release остаётся при 16, чтобы
+        # release-бинар был байт-в-байт прежним (sha256 5ad61f0e…).
+        al = 3 if DEBUG else 15
+        off = (off + al) & ~al
         va[name] = CAVE_VA + off
         off += sizes[name]
     assert off <= CAVE_CAP, f"cave overflow: {off} > {CAVE_CAP}"
@@ -1046,7 +1113,7 @@ def make_patched(d, parts, va):
              (SITE_H6, 'sel_stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
-                  (SITE_H11, 'evt_hover'))
+                  (SITE_H11, 'evt_hover'), (SITE_H12, 'evt_wheel'))
     for (name, site_va, _want, size), part in pairs:
         rel = va[part] - (site_va + 5)
         rep = b'\xE9' + _p32(rel) + b'\x90' * (size - 5)
@@ -1075,7 +1142,7 @@ def verify_disasm(parts, va, listing=False):
     from capstone import Cs, CS_ARCH_X86, CS_MODE_32
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
-               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
+               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11, RET_H12,
                VA_ITER, VA_DRAWBASE} | set(va.values())
     n_ins = 0
     for name in part_order():
@@ -1687,6 +1754,53 @@ def emu_tests(patched_img, va):
         chk("T9 смена i: i=1", m.r32(b + 16), 1)
         chk("T9 смена i: rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
             [1200, 700, 1300, 780])
+
+    # --- T10: evt_wheel (H12) — рекорд kind=4: cursor/active/sector0, dedup по (x,y)
+    if 'evt_wheel' not in va:
+        print("test T10: пропущен (release-сборка без логгера)")
+    else:
+        print("test T10: evt_wheel (mouse-handler колеса: cursor/active/sector0)")
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.w32(IAT_CREATEFILEA, STUBS)
+        m.w32(IAT_WRITEFILE, STUBS + 32)
+        m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        scr = HEAP + 0x7000
+        m.w32(scr + 0x1ac, 300); m.w32(scr + 0x1b0, 190)
+        m.w32(scr + 0x208, 100); m.w32(scr + 0x20c, 200)
+        m.w32(VA_LOG_LASTX, 0); m.w32(VA_LOG_LASTY, 0)
+        m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        cpu.r.update(esi=scr, eax=1550, edx=823, ebx=0x11, esp=esp0)
+        cpu.run(va['evt_wheel'], RET_H12)
+        b = esp0 - 76
+        chk("T10 kind=4", m.r32(b + 0), 4)
+        chk("T10 this", m.r32(b + 4), scr)
+        chk("T10 ret-маркер сайта", m.r32(b + 8), 0x50F5B4)
+        chk("T10 cursor=(1550,823)", (m.r32(b + 16), m.r32(b + 20)), (1550, 823))
+        chk("T10 active=(300,190)", (m.r32(b + 24), m.r32(b + 28)), (300, 190))
+        chk("T10 sector0=(100,200)", (m.r32(b + 32), m.r32(b + 36)), (100, 200))
+        chk("T10 stolen: edi=active.y", cpu.r['edi'], 190)
+        chk("T10 LASTX/Y обновлены", (m.r32(VA_LOG_LASTX), m.r32(VA_LOG_LASTY)),
+            (1550, 823))
+        chk("T10 WriteFile len=44", m.r32(SLOT_LEN), 44)
+        chk("T10 esp balance", cpu.r['esp'], esp0)
+        m.w32(SLOT_LEN, 0)
+        cpu.r.update(esi=scr, eax=1550, edx=823, ebx=0x11, esp=esp0)
+        cpu.run(va['evt_wheel'], RET_H12)
+        chk("T10 dedup: тот же курсор не пишется", m.r32(SLOT_LEN), 0)
+        cpu.r.update(esi=scr, eax=1551, edx=823, ebx=0x11, esp=esp0)
+        cpu.run(va['evt_wheel'], RET_H12)
+        chk("T10 смена курсора пишется", m.r32(SLOT_LEN), 44)
 
     return ok
 

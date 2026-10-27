@@ -45,10 +45,12 @@
 │   │                               (scale-on-create + маркер, спрайты CButtonList,
 │   │                               design-константы меню сохранений, рамка CSelectMission,
 │   │                               глобалы adv 0x827e70/80), верификация: capstone-аудит,
-│   │                               дифф-аудит, интерпретатор T1–T8 (67 проверок);
-│   │                               логгер H8/H9 (el_evt.log) — в каждой сборке по умолчанию,
+│   │                               дифф-аудит, интерпретатор T1–T10 (96 проверок в debug);
+│   │                               логгер H8/H9 (el_evt.log) — в каждой сборке по умолчанию;
+│   │                               H11/H12 (kind 3/4) — диагностика hover колеса;
 │   │                               --no-logger -> чистый release v6
-│   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange/hover)
+│   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange/
+│   │                               hover/wheelin)
 │   ├── evt2txt.py                  el_evt.log -> el_evt_decoded.txt для пересылки (только stdlib)
 │   ├── elfolder_check.py           самодиагностика папки игры -> CHECK.txt (какой скрипт/exe/лог)
 │   └── verify_original.py          сверка sha256 вашего Etherlords.exe с анализируемым билдом

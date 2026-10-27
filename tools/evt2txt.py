@@ -89,6 +89,11 @@ def main():
             rect = tuple(map(s32, r[7:11]))
             lines.append(f"{i:6d} hover     this={this:#010x} vt={nm:22s} i={i_btn} "
                          f"cursor=({cx},{cy}) rect={rect} flags={r[11]:#010x}")
+        elif k == 4:
+            cx, cy, ax, ay = r[5], r[6], r[7], r[8]
+            sl, st = s32(r[9]), s32(r[10])
+            lines.append(f"{i:6d} wheelin   this={this:#010x} cursor=({cx},{cy}) "
+                         f"active=({ax},{ay}) sector0=({sl},{st})")
         else:
             lines.append(f"{i:6d} kind={k}  this={this:#010x} vt={nm:22s} ret={ret:#010x}")
     head = [f"# source : {src} ({len(data)} bytes)",

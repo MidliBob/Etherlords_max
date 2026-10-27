@@ -57,6 +57,10 @@ def main():
             i_btn, cx, cy, L, T, R, B, flags = r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11]
             print(f"{i:6d} hover     this={this:#010x} vt={name:22s} i={i_btn} "
                   f"cursor=({cx},{cy}) rect=({L},{T},{R},{B}) flags={flags:#010x}")
+        elif k == 4:
+            cx, cy, ax, ay, sl, st = r[5], r[6], r[7], r[8], r[9], r[10]
+            print(f"{i:6d} wheelin   this={this:#010x} cursor=({cx},{cy}) "
+                  f"active=({ax},{ay}) sector0=({sl},{st})")
         else:
             print(f"{i:6d} kind={k}  this={this:#010x} vt={name:22s} ret={ret:#010x} raw={r[5:]}")
 
