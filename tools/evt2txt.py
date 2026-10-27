@@ -90,10 +90,11 @@ def main():
             lines.append(f"{i:6d} hover     this={this:#010x} vt={nm:22s} i={i_btn} "
                          f"cursor=({cx},{cy}) rect={rect} flags={r[11]:#010x}")
         elif k == 4:
-            cx, cy, ax, ay = r[5], r[6], r[7], r[8]
-            sl, st = s32(r[9]), s32(r[10])
-            lines.append(f"{i:6d} wheelin   this={this:#010x} cursor=({cx},{cy}) "
-                         f"active=({ax},{ay}) sector0=({sl},{st})")
+            slot, a0, a1, a2 = r[4], r[5], r[6], r[7]
+            ax, ay, sec = r[8], r[9], s32(r[10])
+            lines.append(f"{i:6d} wheelin   this={this:#010x} vt={nm:22s} slot={slot} "
+                         f"ret={ret:#010x} args=({a0},{a1},{a2}) active=({ax},{ay}) "
+                         f"sector0L={sec}")
         else:
             lines.append(f"{i:6d} kind={k}  this={this:#010x} vt={nm:22s} ret={ret:#010x}")
     head = [f"# source : {src} ({len(data)} bytes)",

@@ -25,7 +25,8 @@ V6DBG_SHA = {                     # sha256[:8] -> что это за сборк�
     "74b8106f": "v6dbg 0.0.8–0.0.10: логгер H8/H9, но БЕЗ H11 (hover не пишется)",
     "c0dcbd4e": "v6dbg 0.0.11: H11 есть, но dedup съедал первый hover i=0",
     "7fc13634": "v6dbg 0.0.12: H11 + фикс dedup, но БЕЗ H12 (если hover колеса живёт в adv-хендлере, пар колеса в логе не будет)",
-    "24e0c3f8": "v6dbg 0.0.13: H11+dedup + H12 (mouse-handler колеса, kind=4) — ТО, ЧТО НУЖНО для диагностики колеса",
+    "24e0c3f8": "v6dbg 0.0.13: H12 стоял в обработчике КЛИКА (hover не писал) — устарел",
+    "6477c593": "v6dbg 0.0.14: H13 vtable-интерпозиция мышиных слотов колеса (.ellog) — ТО, ЧТО НУЖНО",
 }
 
 
@@ -94,12 +95,14 @@ def main():
         h8 = img[0x18f690] == 0xE9
         h11 = img[0x17cfee] == 0xE9
         h12 = img[0x10f5b4] == 0xE9
+        import struct as _st
+        h13 = 0x83B000 <= _st.unpack_from('<I', img, 0x35ac20 + 4 * 7)[0] < 0x83C000
         verdict = V6DBG_SHA.get(h[:8], "неизвестная сборка (пересобрать из текущего скрипта)")
         out.append(f"Etherlords_native_v6dbg.exe: sha256={h[:16]}… -> {verdict}")
         out.append(f"  сайты: P1(форс раскладки)={'OK' if p1 else 'НЕТ'}, "
                    f"H8(логгер set_rect)={'есть' if h8 else 'НЕТ'}, "
                    f"H11(hover-логгер)={'есть' if h11 else 'НЕТ'}, "
-                   f"H12(wheel-хендлер)={'есть' if h12 else 'НЕТ'}")
+                   f"H13(vtable-слоты колеса)={'есть' if h13 else 'НЕТ'}")
         mtime_exe = os.path.getmtime(vp)
     else:
         out.append("Etherlords_native_v6dbg.exe: НЕТ (запустить patch_native_v3.py в папке)")

@@ -63,13 +63,20 @@ dword'ы .data 0x830040/0x830044 (НЕ 0x829764/68 из docs/09 §3 — они �
 0x57CFEE: рекорд kind=3 (56 Б: cursor [screen+0xe0/e4], rect array[i]+0x14,
 i, флаги) для диагностики колеса (docs/09, доп. 0.0.11); dedup по смене i.
 
-0.0.13: + H12 — mouse-handler колеса CAdvScreen 0x50F5B4: рекорд kind=4
-(44 Б: cursor, active [+0x1ac/+0x1b0], sector0 [+0x208/+0x20c]); найденная
-механика hover колеса: локальный курсор = cursor − active, сравнение с
-массивом секторов [+0x208], который scale_one НЕ масштабирует (docs/09,
-доп. 0.0.13). Debug-раскладка выровнена по 4 (release — по-прежнему 16,
-release байт-в-байт прежний: sha256 5ad61f0e…). Debug: cave 2439/2474,
-capstone 604, тесты T1–T10 (96 проверок), sha256 24e0c3f87d128129….
+0.0.13: H12 (сайт 0x50F5B4) поставлен по статической гипотезе и НЕ СРАБОТАЛ
+в поле (kind4=0): это обработчик КЛИКА, hover живёт в другом	mouse-виртуале.
+
+0.0.14: H12 снят; вместо него H13 — vtable-интерпозиция ВСЕХ мышиных
+виртуалов класса колеса (vtable 0x75AC20, слоты 3,7,9,0xA..0xD,0x12 — все
+тела в wheel-регионе 0x50e4c1..0x510295): в debug-сборке слоты в файле
+перенаправляются на трамплины в НОВОЙ PE-секции .ellog (RVA 0x43B000,
+добавляется только в debug; release байт-в-байт прежний 5ad61f0e…); общий
+стаб пишет kind=4 (44 Б): slot, this, vtable, caller-ret, args стека
+(x,y,…), active [+0x1ac/+0x1b0], sector0 L [+0x208] — и уходит в оригинал
+слота. Один сеанс показывает, КАКОЙ слот = hover и в каких пространствах
+курсор/active/сектора (docs/09, доп. 0.0.14). Debug: cave 2283/2474 +
+.ellog 272/4096, capstone 620, тесты T1–T10 (96 проверок), sha256
+6477c5930fe722cf… (файл 4 317 184 Б = +4 КБ секции).
 """
 import argparse
 import hashlib
@@ -113,15 +120,21 @@ SITE_H9 = ("H9", 0x5912E0, "8b44240853", 5)      # OnLayoutChange prologue
 # PtInRect(array[i]+0x14, cursor[screen+0xe0/e4]); лог kind=3 (cursor+rect+i+флаги).
 SITE_H11 = ("H11", 0x57CFEE, "89be8c020000", 6)
 RET_H11 = 0x57CFF4
-# H12 (0.0.13): mouse-handler CAdvScreen 0x50f5b4 (6 байт: mov edi,[esi+0x1b0]) —
-# точка, где курсор (eax,edx) превращается в локальный (cursor − active[+0x1ac/+0x1b0])
-# и далее сравнивается с массивом секторов [+0x208] (НЕ масштабируется scale_one).
-# Рекорд kind=4: cursor, active, sector0(L,T). Именно здесь живёт hover колеса,
-# если H11 (CButtonList::Draw) молчит (docs/09, доп. 0.0.13).
-SITE_H12 = ("H12", 0x50F5B4, "8bbeb0010000", 6)
-RET_H12 = 0x50F5BA
-VA_LOG_LASTX  = 0x83004C   # H12 dedup: последний курсор (x,y)
-VA_LOG_LASTY  = 0x830050
+# H13 (0.0.14): vtable-интерпозиция мышиных виртуалов колеса. Класс колеса —
+# vtable 0x75AC20 (в логах vt=?75ac20); его mouse-виртуалы — функции wheel-
+# региона 0x50e4c1..0x510295 (H12-сайт 0x50f5b4 сидел в слоте 7 = обработчик
+# КЛИКА, hover живёт в другом слоте). В debug-сборке слоты перенаправляются
+# на трамплины в НОВОЙ PE-секции .ellog (RVA 0x43b000, только debug): общий
+# стаб пишет kind=4 (slot, this, vt, caller, args0..2, active, sector0) и
+# уходит в оригинал. Рекорд приходит на КАЖДЫЙ mouse-event колеса — видно,
+# какой слот = hover.
+VTBL_WHEEL = 0x75AC20
+WHEEL_SLOTS = (3, 7, 9, 0x0A, 0x0B, 0x0C, 0x0D, 0x12)
+WHEEL_ORIG = {3: 0x510100, 7: 0x50F530, 9: 0x50F740, 0x0A: 0x50FDB0,
+              0x0B: 0x50FB70, 0x0C: 0x50FED0, 0x0D: 0x50FDD0, 0x12: 0x50F310}
+EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
+EXTRA_VA = 0x400000 + EXTRA_RVA
+EXTRA_CAP = 0x1000
 RET_OLC = 0x5912E5
 RET_SETRECT = 0x58F696
 IAT_CREATEFILEA = 0x756270
@@ -140,7 +153,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.13"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.14"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -164,8 +177,8 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 # (--debug, H8/H9). См. docs/09 §4 (v4 post-mortem).
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
-                                                        SITE_H12] if DEBUG else [])
+                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11] if DEBUG else [])
+
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
 # Извлечены из setter'а 0x53db8c..0x53de78 (имmediates). Пары/четвёрки трактуются
@@ -852,50 +865,6 @@ def build_evt_write(va, env):
     return bytes(a.b)
 
 
-def build_evt_wheel(va, env):
-    """H12 (0.0.13): пролог mouse-handler'а колеса 0x50F5B4 (6 байт:
-    mov edi,[esi+0x1b0]). В этой точке eax/edx = курсор (предположительно
-    native), [esi+0x1ac]/[esi+0x1b0] = active-точка (масштабируется scale_one),
-    [esi+0x208..] = массив rect'ов секторов колеса (НЕ масштабируется).
-    Рекорд kind=4 (44 Б): this, ret-маркер сайта, cursor(x,y), active(x,y),
-    sector0(L,T). Dedup по совпадению (x,y) с прошлым (VA_LOG_LASTX/Y).
-    Украденные байты + jmp 0x50F5BA."""
-    W = env['evt_write']
-    a = Asm(va)
-    a.pushad()
-    a.mov_r_abs32('ecx', VA_LOG_LASTX)
-    a.cmp_rr('eax', 'ecx')
-    a.jne('log')
-    a.mov_r_abs32('ecx', VA_LOG_LASTY)
-    a.cmp_rr('edx', 'ecx')
-    a.je('skip')
-    a.L('log')
-    a.mov_mem_abs('eax', VA_LOG_LASTX)
-    a.mov_mem_abs('edx', VA_LOG_LASTY)
-    a.sub_esp(44)
-    a.mov_r_imm('ecx', 4);             a.mov_mem_r('esp', 0, 'ecx')
-    a.mov_mem_r('esp', 4, 'esi')
-    a.mov_r_imm('ecx', 0x50F5B4);      a.mov_mem_r('esp', 8, 'ecx')
-    a.mov_mem_imm('esp', 12, 0)
-    a.mov_mem_r('esp', 16, 'eax')
-    a.mov_mem_r('esp', 20, 'edx')
-    a.mov_r_mem('ecx', 'esi', 0x1ac);  a.mov_mem_r('esp', 24, 'ecx')
-    a.mov_r_mem('ecx', 'esi', 0x1b0);  a.mov_mem_r('esp', 28, 'ecx')
-    a.mov_r_mem('ecx', 'esi', 0x208);  a.mov_mem_r('esp', 32, 'ecx')
-    a.mov_r_mem('ecx', 'esi', 0x20c);  a.mov_mem_r('esp', 36, 'ecx')
-    a.mov_r_imm('eax', env['evt_str'])
-    a.lea_r_mem('edx', 'esp', 0)
-    a.mov_r_imm('ecx', 44)
-    a.call_va(W)
-    a.add_esp(44)
-    a.L('skip')
-    a.popad()
-    a.mov_r_mem('edi', 'esi', 0x1b0)   # украденные байты сайта
-    a.jmp32(RET_H12)
-    a.resolve()
-    return bytes(a.b)
-
-
 def build_evt_setrect(va, env):
     """H8: пролог set_rect 0x58f690 (6 байт): лог + украденные mov eax,[esp+4];
     mov edx,[eax]; jmp 0x58f696. this=ecx, rect*=[esp+4], ret=[esp]."""
@@ -1018,16 +987,74 @@ def build_evt_olc(va, env):
     return bytes(a.b)
 
 
+def build_wtramp(va, env):
+    """Трамплины слотов: push slot; jmp wstub. 7 байт на слот, порядок WHEEL_SLOTS."""
+    a = Asm(va)
+    for slot in WHEEL_SLOTS:
+        a.raw(b'\x6a' + bytes([slot]))          # push imm8 slot
+        a.jmp32(env['wstub'])
+    a.resolve()
+    return bytes(a.b)
+
+
+def build_wstub(va, env):
+    """Общий стаб H13: thiscall (ecx=this, args x,y в стеке). Пишет kind=4
+    (44 Б): this, vt, caller-ret, mark=slot, d0..d2 = args стека, d3/d4 =
+    active [+0x1ac/+0x1b0], pad = sector0 L [+0x208]; затем хвостовой переход
+    в оригинал слота через wtab[slot] (eax-трамплин, регистры из pushad)."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    a.sub_esp(44)
+    a.mov_mem_imm('esp', 0, 4)                            # kind
+    # pushad-кадр: [esp1+24] = сохранённый ecx (this); esp2 = esp1 − 44
+    a.mov_r_mem('eax', 'esp', 68);  a.mov_mem_r('esp', 4, 'eax')    # this (сохранённый ecx)
+    a.mov_r_mem('eax', 'eax', 0);   a.mov_mem_r('esp', 8, 'eax')    # vtable
+    a.mov_r_mem('eax', 'esp', 80);  a.mov_mem_r('esp', 12, 'eax')   # caller ret
+    a.mov_r_mem('eax', 'esp', 76);  a.mov_mem_r('esp', 16, 'eax')   # slot
+    a.mov_r_mem('eax', 'esp', 84);  a.mov_mem_r('esp', 20, 'eax')   # arg0 (x?)
+    a.mov_r_mem('eax', 'esp', 88);  a.mov_mem_r('esp', 24, 'eax')   # arg1 (y?)
+    a.mov_r_mem('eax', 'esp', 92);  a.mov_mem_r('esp', 28, 'eax')   # arg2
+    a.mov_r_mem('eax', 'esp', 68)
+    a.mov_r_mem('ecx', 'eax', 0x1ac); a.mov_mem_r('esp', 32, 'ecx')  # active X
+    a.mov_r_mem('ecx', 'eax', 0x1b0); a.mov_mem_r('esp', 36, 'ecx')  # active Y
+    a.mov_r_mem('ecx', 'eax', 0x208); a.mov_mem_r('esp', 40, 'ecx')  # sector0 L
+    a.mov_r_imm('eax', env['evt_str'])
+    a.lea_r_mem('edx', 'esp', 0)
+    a.mov_r_imm('ecx', 44)
+    a.call_va(W)
+    a.add_esp(44)
+    a.mov_r_mem('eax', 'esp', 32)                          # slot (из pushad-кадра)
+    a.raw(b'\x8b\x04\x85' + _p32(env['wtab']))          # mov eax,[wtab+eax*4]
+    a.raw(b'\x89\x44\x24\x1c')                          # mov [esp+28],eax (слот сохран. eax в pushad)
+    a.popad()
+    a.raw(b'\xff\xe0')                                   # jmp eax (оригинал слота)
+    a.resolve()
+    return bytes(a.b)
+
+
+def build_wtab(va, env):
+    """Таблица оригиналов: wtab[slot*4] = адрес исходной виртуальной функции."""
+    blob = bytearray(max(WHEEL_SLOTS) * 4 + 4)
+    for slot in WHEEL_SLOTS:
+        blob[slot * 4:slot * 4 + 4] = _p32(WHEEL_ORIG[slot])
+    return bytes(blob)
+
+
 # ------------------------------------------------------------------- раскладка
+def extra_order():
+    return ('wtramp', 'wstub', 'wtab')
+
+
 def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
              'rowl_stub', 'sel_stub')
-            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover', 'evt_wheel',
+            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover',
                  'evt_str') if DEBUG else ()))
 
 
-DATA_PARTS = {'savefix_tbl', 'evt_str'}
+DATA_PARTS = {'savefix_tbl', 'evt_str', 'wtab'}
 
 
 def layout_parts():
@@ -1043,7 +1070,6 @@ def layout_parts():
         'sel_stub': build_selstub,
         'evt_write': build_evt_write, 'evt_setrect': build_evt_setrect,
         'evt_olc': build_evt_olc, 'evt_hover': build_evt_hover,
-        'evt_wheel': build_evt_wheel,
         'evt_str': build_evt_str,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
@@ -1073,6 +1099,28 @@ def layout_parts():
     return parts, va, sizes
 
 
+def layout_extra(va_main):
+    """Раскладка H13-блока в новой секции .ellog (только debug-сборки)."""
+    builders = {'wtramp': build_wtramp, 'wstub': build_wstub, 'wtab': build_wtab}
+    env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'evt_write': EXTRA_VA,
+            'evt_str': EXTRA_VA}
+    sizes = {n: len(builders[n](EXTRA_VA, env0)) for n in extra_order()}
+    off = 0
+    xva = {}
+    for name in extra_order():
+        off = (off + 3) & ~3
+        xva[name] = EXTRA_VA + off
+        off += sizes[name]
+    assert off <= EXTRA_CAP, f".ellog overflow: {off} > {EXTRA_CAP}"
+    env = dict(xva)
+    env['evt_write'] = va_main['evt_write']
+    env['evt_str'] = va_main['evt_str']
+    xparts = {n: builders[n](xva[n], env) for n in extra_order()}
+    for name in extra_order():
+        assert len(xparts[name]) == sizes[name], name
+    return xparts, xva, sizes
+
+
 def build_cave_blob(parts, va):
     used_end = max(va[n] + len(parts[n]) for n in parts) - CAVE_VA
     blob = bytearray(used_end)
@@ -1096,6 +1144,14 @@ def check_sites(d, verbose=True):
         if verbose:
             print(f"  {name:4s} file {off:#08x}: have {cur}  want {want}  "
                   f"[{'OK' if good else 'MISMATCH'}]")
+    for slot in WHEEL_SLOTS:
+        off = VTBL_WHEEL - IMAGE_BASE + 4 * slot
+        cur = struct.unpack_from('<I', d, off)[0]
+        good = cur == WHEEL_ORIG[slot]
+        ok &= good
+        if verbose:
+            print(f"  vtbl[{slot:#04x}] file {off:#08x}: have {cur:#010x}  "
+                  f"want {WHEEL_ORIG[slot]:#010x}  [{'OK' if good else 'MISMATCH'}]")
     cave = d[CAVE_FILE:CAVE_FILE + CAVE_CAP]
     zeros = all(b == 0 for b in cave)
     if verbose:
@@ -1104,7 +1160,7 @@ def check_sites(d, verbose=True):
     return ok
 
 
-def make_patched(d, parts, va):
+def make_patched(d, parts, va, extra=None):
     img = bytearray(d)
     for (name, va_s, _want, _sz), new in zip(SITE_P1, P1_NEW):
         img[va2file(va_s):va2file(va_s) + 2] = bytes.fromhex(new)
@@ -1113,21 +1169,55 @@ def make_patched(d, parts, va):
              (SITE_H6, 'sel_stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
-                  (SITE_H11, 'evt_hover'), (SITE_H12, 'evt_wheel'))
+                  (SITE_H11, 'evt_hover'))
     for (name, site_va, _want, size), part in pairs:
         rel = va[part] - (site_va + 5)
         rep = b'\xE9' + _p32(rel) + b'\x90' * (size - 5)
         img[va2file(site_va):va2file(site_va) + size] = rep
     blob = build_cave_blob(parts, va)
     img[CAVE_FILE:CAVE_FILE + len(blob)] = blob
+    if extra is not None:
+        xparts, xva = extra
+        e_lf = struct.unpack_from('<I', img, 0x3C)[0]
+        nsec = struct.unpack_from('<H', img, e_lf + 6)[0]
+        sopt = struct.unpack_from('<H', img, e_lf + 20)[0]
+        sect_off = e_lf + 24 + sopt
+        size_img = struct.unpack_from('<I', img, e_lf + 24 + 0x38)[0]
+        assert nsec == 5 and size_img == EXTRA_RVA, \
+            f"PE-магия не совпадает с ожиданием (nsec={nsec}, SizeOfImage={size_img:#x})"
+        raw_off = (len(img) + 0x1FF) & ~0x1FF
+        img.extend(b'\x00' * (raw_off + EXTRA_CAP - len(img)))
+        xblob = bytearray(EXTRA_CAP)
+        for n in extra_order():
+            o = xva[n] - EXTRA_VA
+            xblob[o:o + len(xparts[n])] = xparts[n]
+        img[raw_off:raw_off + EXTRA_CAP] = xblob
+        hdr = struct.pack('<8sIIIIIIHHI', b'.ellog\x00\x00', EXTRA_CAP, EXTRA_RVA,
+                          EXTRA_CAP, raw_off, 0, 0, 0, 0, 0x60000020)
+        img[sect_off + 5 * 40:sect_off + 6 * 40] = hdr
+        struct.pack_into('<H', img, e_lf + 6, 6)
+        struct.pack_into('<I', img, e_lf + 24 + 0x38, size_img + EXTRA_CAP)
+        for idx, slot in enumerate(WHEEL_SLOTS):
+            struct.pack_into('<I', img, VTBL_WHEEL - IMAGE_BASE + 4 * slot,
+                             xva['wtramp'] + idx * 7)
     return bytes(img), blob
 
 
-def audit_diff(orig, patched):
+def audit_diff(orig, patched, debug=False):
     allowed = set()
     for _n, va_s, _w, sz in ALL_SITES():
         allowed.update(range(va2file(va_s), va2file(va_s) + sz))
     allowed.update(range(CAVE_FILE, CAVE_FILE + CAVE_CAP))
+    if debug:
+        e_lf = struct.unpack_from('<I', orig, 0x3C)[0]
+        sopt = struct.unpack_from('<H', orig, e_lf + 20)[0]
+        sect_off = e_lf + 24 + sopt
+        allowed.update(range(e_lf + 6, e_lf + 8))                 # NumberOfSections
+        allowed.update(range(e_lf + 24 + 0x38, e_lf + 24 + 0x3C))  # SizeOfImage
+        allowed.update(range(sect_off + 5 * 40, sect_off + 6 * 40))  # новый заголовок
+        for slot in WHEEL_SLOTS:                                   # vtable-слоты
+            allowed.update(range(VTBL_WHEEL - IMAGE_BASE + 4 * slot,
+                                 VTBL_WHEEL - IMAGE_BASE + 4 * slot + 4))
     changed = {i for i in range(len(orig)) if orig[i] != patched[i]}
     extra = changed - allowed
     assert not extra, f"неожиданные изменения: {sorted(extra)[:16]}"
@@ -1138,16 +1228,18 @@ def audit_diff(orig, patched):
 
 
 # -------------------------------------------------------- capstone-верификация
-def verify_disasm(parts, va, listing=False):
+def verify_disasm(parts, va, listing=False, extra=None):
     from capstone import Cs, CS_ARCH_X86, CS_MODE_32
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
-               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11, RET_H12,
+               RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
                VA_ITER, VA_DRAWBASE} | set(va.values())
+    xparts, xva = (extra or ({}, {}))
+    allowed |= set(xva.values())
     n_ins = 0
-    for name in part_order():
-        blob = parts[name]
-        base = va[name]
+    for name in list(part_order()) + ([n for n in extra_order()] if extra else []):
+        blob = (parts if name in parts else xparts)[name]
+        base = (va if name in va else xva)[name]
         allowed.update(range(base, base + len(blob)))
         if name in DATA_PARTS:
             if listing:
@@ -1222,9 +1314,9 @@ class Mini386:
 
     def _ea(self, op):
         m = op.mem
-        assert m.index == 0 and m.scale == 1
         base = 0 if m.base == 0 else self.r[self.md.reg_name(m.base)]
-        return (base + m.disp) & 0xFFFFFFFF
+        idx = 0 if m.index == 0 else self.r[self.md.reg_name(m.index)] * m.scale
+        return (base + idx + m.disp) & 0xFFFFFFFF
 
     def _get(self, op):
         t = op.type
@@ -1354,7 +1446,7 @@ class Mini386:
 
 
 # ------------------------------------------------- функциональные тесты cave
-def emu_tests(patched_img, va):
+def emu_tests(patched_img, va, extra=None):
     """T1..T7 на интерпретаторе. Итератор 0x6c51a0 в тестовом образе — заглушка
     `slot=[slot+8]` (протокол вызова тот же, что в apply_flag)."""
     HEAP, STACK = 0x2000000, 0x1000000
@@ -1365,6 +1457,8 @@ def emu_tests(patched_img, va):
         img = bytearray(patched_img[:0x417000])
         img[va2file(VA_ITER):va2file(VA_ITER) + len(ITER_STUB)] = ITER_STUB
         mem.map(IMAGE_BASE, bytes(img))
+        if len(patched_img) > 0x41D000:      # секция .ellog (debug-сборки)
+            mem.map(EXTRA_VA, bytes(patched_img[0x41D000:0x41D000 + EXTRA_CAP]))
         mem.map(0x400000 + 0x417000, bytes(0x43C000 - 0x417000))
         mem.map(HEAP, bytes(0x40000))
         mem.map(STACK, bytes(0x20000))
@@ -1755,11 +1849,12 @@ def emu_tests(patched_img, va):
         chk("T9 смена i: rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
             [1200, 700, 1300, 780])
 
-    # --- T10: evt_wheel (H12) — рекорд kind=4: cursor/active/sector0, dedup по (x,y)
-    if 'evt_wheel' not in va:
-        print("test T10: пропущен (release-сборка без логгера)")
+    # --- T10: H13 vtable-стаб (kind=4: slot/this/args/active/sector0 + хвост в оригинал)
+    if not extra:
+        print("test T10: пропущен (release-сборка без .ellog)")
     else:
-        print("test T10: evt_wheel (mouse-handler колеса: cursor/active/sector0)")
+        print("test T10: evt_wheel-stub H13 (vtable-интерпозиция, kind=4)")
+        xva = extra[1]
         STUBS = HEAP + 0x30000
         SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
         stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
@@ -1774,33 +1869,36 @@ def emu_tests(patched_img, va):
         m.w32(IAT_CREATEFILEA, STUBS)
         m.w32(IAT_WRITEFILE, STUBS + 32)
         m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        STOP = STACK
         scr = HEAP + 0x7000
+        m.w32(scr + 0x0, VTBL_WHEEL)
         m.w32(scr + 0x1ac, 300); m.w32(scr + 0x1b0, 190)
-        m.w32(scr + 0x208, 100); m.w32(scr + 0x20c, 200)
-        m.w32(VA_LOG_LASTX, 0); m.w32(VA_LOG_LASTY, 0)
+        m.w32(scr + 0x208, 100)
+        slot = 7
+        m.w32(xva['wtab'] + slot * 4, STOP)      # «оригинал» слота = сентинел
         m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
         esp0 = STACK + 0x10000
-        cpu.r.update(esi=scr, eax=1550, edx=823, ebx=0x11, esp=esp0)
-        cpu.run(va['evt_wheel'], RET_H12)
-        b = esp0 - 76
+        m.w32(esp0, 0xC0FFEE)                    # caller ret
+        m.w32(esp0 + 4, 1550)                    # arg0 (x?)
+        m.w32(esp0 + 8, 823)                     # arg1 (y?)
+        m.w32(esp0 + 12, 9)                      # arg2
+        idx = WHEEL_SLOTS.index(slot)
+        cpu.r.update(ecx=scr, eax=0x99, edx=0x55, ebx=0x11, esp=esp0)
+        cpu.run(xva['wtramp'] + idx * 7, STOP)
+        b = esp0 - 80
         chk("T10 kind=4", m.r32(b + 0), 4)
         chk("T10 this", m.r32(b + 4), scr)
-        chk("T10 ret-маркер сайта", m.r32(b + 8), 0x50F5B4)
-        chk("T10 cursor=(1550,823)", (m.r32(b + 16), m.r32(b + 20)), (1550, 823))
-        chk("T10 active=(300,190)", (m.r32(b + 24), m.r32(b + 28)), (300, 190))
-        chk("T10 sector0=(100,200)", (m.r32(b + 32), m.r32(b + 36)), (100, 200))
-        chk("T10 stolen: edi=active.y", cpu.r['edi'], 190)
-        chk("T10 LASTX/Y обновлены", (m.r32(VA_LOG_LASTX), m.r32(VA_LOG_LASTY)),
-            (1550, 823))
+        chk("T10 vtable", m.r32(b + 8), VTBL_WHEEL)
+        chk("T10 caller ret", m.r32(b + 12), 0xC0FFEE)
+        chk("T10 mark=slot", m.r32(b + 16), 7)
+        chk("T10 args (1550,823,9)", (m.r32(b + 20), m.r32(b + 24), m.r32(b + 28)),
+            (1550, 823, 9))
+        chk("T10 active=(300,190)", (m.r32(b + 32), m.r32(b + 36)), (300, 190))
+        chk("T10 sector0L", m.r32(b + 40), 100)
         chk("T10 WriteFile len=44", m.r32(SLOT_LEN), 44)
-        chk("T10 esp balance", cpu.r['esp'], esp0)
-        m.w32(SLOT_LEN, 0)
-        cpu.r.update(esi=scr, eax=1550, edx=823, ebx=0x11, esp=esp0)
-        cpu.run(va['evt_wheel'], RET_H12)
-        chk("T10 dedup: тот же курсор не пишется", m.r32(SLOT_LEN), 0)
-        cpu.r.update(esi=scr, eax=1551, edx=823, ebx=0x11, esp=esp0)
-        cpu.run(va['evt_wheel'], RET_H12)
-        chk("T10 смена курсора пишется", m.r32(SLOT_LEN), 44)
+        chk("T10 eax=оригинал слота", cpu.r['eax'], STOP)
+        chk("T10 esp=entry-4 (slot оставлен)", cpu.r['esp'], esp0 - 4)
+        chk("T10 ecx(this) сохранён", cpu.r['ecx'], scr)
 
     return ok
 
@@ -1872,22 +1970,31 @@ def main():
         print(f"  {name:11s} VA {va[name]:#010x}  file {va2file(va[name]):#08x}  {sizes[name]:4d} байт")
     blob = build_cave_blob(parts, va)
     print(f"  итого занято {len(blob)} из {CAVE_CAP} байт cave")
-    n_ins = verify_disasm(parts, va, listing=args.listing)
+    extra = None
+    if DEBUG:
+        xparts, xva, xsizes = layout_extra(va)
+        for name in extra_order():
+            print(f"  {name:11s} VA {xva[name]:#010x}  (.ellog)  {xsizes[name]:4d} байт")
+        extra = (xparts, xva)
+        print(f"  секция .ellog: {sum(xsizes.values())} из {EXTRA_CAP} байт "
+              f"(только debug; release без секции)")
+    n_ins = verify_disasm(parts, va, listing=args.listing, extra=extra)
     print(f"  capstone: {n_ins} инструкций, все ветвления в разрешённом наборе, байт без остатка")
 
     print("\n[3/4] образ + аудит диффа:")
-    img, _ = make_patched(d, parts, va)
-    n_changed = audit_diff(d, img)
-    print(f"  изменено байт: {n_changed} (сайты P1/H1..H6 + cave)")
+    img, _ = make_patched(d, parts, va, extra)
+    n_changed = audit_diff(d, img, debug=DEBUG)
+    print(f"  изменено байт: {n_changed} (сайты P1/H1..H6 + cave"
+          + (", .ellog, vtable)" if DEBUG else ")"))
 
     if args.check:
         print("\nCHECK OK: патч применим.")
         return
 
     if not args.no_emu:
-        print("\n[4/4] интерпретатор: функциональные тесты cave (T1..T7)")
-        print("      (логгер-стабы H8/H9 в тестах не исполняются — IAT не эмулируется)")
-        if not emu_tests(img, va):
+        print("\n[4/4] интерпретатор: функциональные тесты cave (T1..T10)")
+        print("      (логгер-стабы H8/H9 в тестах не исполняются напрямую — IAT эмулируется заглушками)")
+        if not emu_tests(img, va, extra):
             print("\nABORT: тесты провалены — файл НЕ записан.")
             sys.exit(3)
     else:

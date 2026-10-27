@@ -58,9 +58,9 @@ def main():
             print(f"{i:6d} hover     this={this:#010x} vt={name:22s} i={i_btn} "
                   f"cursor=({cx},{cy}) rect=({L},{T},{R},{B}) flags={flags:#010x}")
         elif k == 4:
-            cx, cy, ax, ay, sl, st = r[5], r[6], r[7], r[8], r[9], r[10]
-            print(f"{i:6d} wheelin   this={this:#010x} cursor=({cx},{cy}) "
-                  f"active=({ax},{ay}) sector0=({sl},{st})")
+            slot, a0, a1, a2, ax, ay, sec = r[4], r[5], r[6], r[7], r[8], r[9], r[10]
+            print(f"{i:6d} wheelin   this={this:#010x} vt={name:22s} slot={slot} "
+                  f"ret={ret:#010x} args=({a0},{a1},{a2}) active=({ax},{ay}) sector0L={sec}")
         else:
             print(f"{i:6d} kind={k}  this={this:#010x} vt={name:22s} ret={ret:#010x} raw={r[5:]}")
 
