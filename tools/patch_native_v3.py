@@ -177,7 +177,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.17"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.18"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -317,6 +317,10 @@ class Asm:
     def jne(self, t):  self.jnz(t)
     def jae(self, t):  self._branch(b'\x0F\x83', t)
     def jbe(self, t):  self._branch(b'\x0F\x86', t)
+    def jl(self, t):   self._branch(b'\x0F\x8C', t)
+    def jg(self, t):   self._branch(b'\x0F\x8F', t)
+    def jb(self, t):   self._branch(b'\x0F\x82', t)
+    def ja(self, t):   self._branch(b'\x0F\x87', t)
     def inc_abs32(self, va):           self._e(b'\xFF\x05' + _p32(va))
     def cmp_abs32_imm(self, va, imm):  self._e(b'\x81\x3D' + _p32(va) + _p32(imm))
     def jmp32(self, t): self._branch(b'\xE9', t)
@@ -541,7 +545,16 @@ def build_scale_one(va, env):
     a.jne('mark')
     a.mov_r_mem('edx', 'esp', 16)
     a.mov_r_mem('ecx', 'edx', 0x1d4)             # count
-    a.test_rr('ecx', 'ecx'); a.jz('mark')
+    # 0.0.18 hotfix: bounds-гейт. На старте (пост-проход/H4) count у части
+    # объектов 0x75AC20 ещё не инициализирован лоадером (heap-мусор) — цикл по
+    # мусорному count уходил за память => краш при запуске (регресс 0.0.17).
+    # Секторов колеса заведомо < 32: вне [1,32] массив НЕ трогаем.
+    a.mov_r_imm('eax', 1)
+    a.cmp_rr('ecx', 'eax')
+    a.jb('mark')                                 # count < 1 (unsigned: и мусор-negative)
+    a.mov_r_imm('eax', 32)
+    a.cmp_rr('ecx', 'eax')
+    a.ja('mark')                                 # count > 32
     a.lea_r_mem('ebx', 'edx', 0x208)             # base массива
     a.mov_mem_r('esp', 36, 'ecx')                # i = count
     a.L('wloop')
@@ -2154,6 +2167,26 @@ def emu_tests(patched_img, va, extra=None):
     cpu.run(va['scale_one'], STOP)
     chk("T13 idempotent", [m.r32(wl + 0x208 + 4 * j) for j in range(4)],
         [100 * 1600 // 1024, 50 * 900 // 768, 300 * 1600 // 1024, 150 * 900 // 768])
+
+    # --- T13b: bounds-гейт count (hotfix 0.0.18): мусор/0/>32 -> массив НЕ тронут
+    print("test T13b: bounds-гейт count [1..32] (краш-защита 0.0.18)")
+    for tag, cnt in (("garbage", 0x7FFFFFFF), ("zero", 0), ("over", 33)):
+        cpu = new_cpu(); m = cpu.m
+        setup_mode(m, w=1600, h=900)
+        m.w32(VA_SCREEN, VA_SCREEN); m.w32(VA_SCREEN + 0x188, 1)
+        wl = HEAP + 0x8000
+        m.w32(wl + 0x0, VTBL_WHEEL)
+        m.w32(wl + 0x14c, 0xF05FFFFF)
+        m.w32(wl + 0x1d4, cnt)
+        for j, v in enumerate((100, 50, 300, 150)):
+            m.w32(wl + 0x208 + 4 * j, v)
+        esp0 = STACK + 0x10000
+        m.w32(esp0, STACK)
+        cpu.r.update(eax=wl, edx=1, esp=esp0)
+        cpu.run(va['scale_one'], STACK)
+        chk(f"T13b {tag}: массив не тронут",
+            [m.r32(wl + 0x208 + 4 * j) for j in range(4)], [100, 50, 300, 150])
+        chk(f"T13b {tag}: marker поставлен", m.r32(wl + 0x14c) & 0xC, 4)
 
     return ok
 
