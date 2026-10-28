@@ -154,6 +154,19 @@ RET_H14 = 0x50E3CA
 # this, vtable, code, arg2, arg3, cursor [screen+0xe0/e4] — БЕЗ фильтра
 # (объём держит DBG_CAP): по vt-приёмникам видно, кто съедает сообщения колеса.
 SITE_H15 = ("H15", 0x58E7B0, "53578bf9e8c72f0000", 9)
+# S1/S2 (0.0.19): hover-тест колеса сравнивает ЛОКАЛЬНЫЕ координаты
+# (курор/аргументы − масштабированный origin) с DESIGN-rect'ами sector-массива
+# [+0x208] (заполняется лоадером ПОЗЖЕ маркера — масштабирование массива в
+# scale_one (0.0.17/0.0.18) не срабатывало: либо count ещё мусорный, либо
+# массив перезаписывается после). Устойчивое к таймингам решение: делить
+# локальные координаты на k В МОМЕНТ теста (маска-fix подход, H3):
+# (C − O_s)/k ∈ R_d  <=>  C ∈ O_s + k·R_d = зона нарисованных спрайтов.
+# S1: 0x50F67D (8 Б: mov [esp+0x28],eax; mov [esp+0x2c],ecx) — loop c active.
+# S2: 0x50F5FC (8 Б: mov [esp+0x10],eax; mov [esp+0x14],edx) — loop c [+0x1e8].
+SITE_S1 = ("S1", 0x50F67D, "894424288 94c242c".replace(" ", ""), 8)
+SITE_S2 = ("S2", 0x50F5FC, "89442410895424 14".replace(" ", ""), 8)
+RET_S1 = 0x50F685
+RET_S2 = 0x50F604
 RET_H15 = 0x58E7B9
 VA_MSGBASE = 0x591780                   # украденный call из пролога 0x58e7b0
 EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
@@ -177,7 +190,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.18"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.19"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -203,6 +216,9 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
                                SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
                                                         SITE_H14, SITE_H15] if DEBUG else [])
+ALL_SITES = lambda: ALL_SITES() if False else (SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
+                               SITE_H5B, SITE_H6, SITE_S1, SITE_S2] + ([SITE_H8, SITE_H9, SITE_H11,
+                                                        SITE_H14, SITE_H15] if DEBUG else []))
 
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
@@ -517,7 +533,7 @@ def build_scale_one(va, env):
     a.mov_r_mem('eax', 'esp', 16)
     a.mov_r_mem('eax', 'eax', 0)                 # vtable
     a.cmp_eax_imm32(VTBL_BUTTONLIST)
-    a.jne('wcheck')
+    a.jne('mark')
     a.mov_r_mem('ebx', 'esp', 16)
     a.mov_r_mem('edx', 'ebx', 0x1c4)             # count
     a.test_rr('edx', 'edx'); a.jz('mark')
@@ -534,40 +550,6 @@ def build_scale_one(va, env):
     a.mov_r_mem('eax', 'esp', 36)
     a.test_rr('eax', 'eax')
     a.jnz('sloop')
-    # wheel (vtbl 0x75AC20, 0.0.17): массив sector-rect'ов [+0x208], шаг 0x10,
-    # count [+0x1d4] — hover-тест диспетчера сравнивает (msg_args − active_scaled)
-    # с этими DESIGN-rect'ами, тогда как отрисовка живёт в k·R: без масштабирования
-    # зона hover уезжает на (k−1)·R (docs/09, доп. 0.0.17).
-    a.L('wcheck')
-    a.mov_r_mem('eax', 'esp', 16)
-    a.mov_r_mem('eax', 'eax', 0)                 # vtable
-    a.cmp_eax_imm32(VTBL_WHEEL)
-    a.jne('mark')
-    a.mov_r_mem('edx', 'esp', 16)
-    a.mov_r_mem('ecx', 'edx', 0x1d4)             # count
-    # 0.0.18 hotfix: bounds-гейт. На старте (пост-проход/H4) count у части
-    # объектов 0x75AC20 ещё не инициализирован лоадером (heap-мусор) — цикл по
-    # мусорному count уходил за память => краш при запуске (регресс 0.0.17).
-    # Секторов колеса заведомо < 32: вне [1,32] массив НЕ трогаем.
-    a.mov_r_imm('eax', 1)
-    a.cmp_rr('ecx', 'eax')
-    a.jb('mark')                                 # count < 1 (unsigned: и мусор-negative)
-    a.mov_r_imm('eax', 32)
-    a.cmp_rr('ecx', 'eax')
-    a.ja('mark')                                 # count > 32
-    a.lea_r_mem('ebx', 'edx', 0x208)             # base массива
-    a.mov_mem_r('esp', 36, 'ecx')                # i = count
-    a.L('wloop')
-    a.mov_r_mem('eax', 'esp', 36)
-    a.add_eax_u8(0xFF)
-    a.mov_mem_r('esp', 36, 'eax')
-    a.imul_r_r_imm('eax', 'eax', 0x10)
-    a.add_rr('eax', 'ebx')
-    a.mov_rr('ecx', 'eax')                       # rect
-    a.call_va(SR)
-    a.mov_r_mem('eax', 'esp', 36)
-    a.test_rr('eax', 'eax')
-    a.jnz('wloop')
     a.L('mark')
     a.mov_r_mem('eax', 'esp', 16)
     a.mov_r_mem('eax', 'eax', 0x14c)
@@ -1175,17 +1157,98 @@ def build_wtab(va, env):
     return bytes(blob)
 
 
+def build_dscale(va, env):
+    """dscale(eax=value, edx=axis(0=X,1=Y)) -> eax = value*base/live (деление
+    на k). mode null или k==1 -> value без изменений. Портит eax/ecx/edx."""
+    a = Asm(va)
+    a.push_r('eax')                              # value
+    a.sub_esp(16)
+    a.mov_r_abs32('ecx', VA_MODE_OBJ)
+    a.mov_r_mem('ecx', 'ecx', 0x18)
+    a.test_rr('ecx', 'ecx'); a.jz('ddone')
+    a.mov_r_mem('eax', 'ecx', 0x14); a.mov_mem_r('esp', 0, 'eax')    # W
+    a.mov_r_mem('eax', 'ecx', 0x18); a.mov_mem_r('esp', 4, 'eax')    # H
+    a.mov_r_abs32('ecx', VA_SCREEN)
+    a.mov_r_mem('ecx', 'ecx', 0x188)
+    a.test_rr('ecx', 'ecx'); a.jnz('db1024')
+    a.mov_mem_imm('esp', 8, 800); a.mov_mem_imm('esp', 12, 600)
+    a.jmp32('dhava')
+    a.L('db1024')
+    a.mov_mem_imm('esp', 8, 1024); a.mov_mem_imm('esp', 12, 768)
+    a.L('dhava')
+    a.mov_r_mem('eax', 'esp', 0); a.cmp_r_mem('eax', 'esp', 8); a.jne('ddiv')
+    a.mov_r_mem('eax', 'esp', 4); a.cmp_r_mem('eax', 'esp', 12); a.je('ddone')
+    a.L('ddiv')
+    a.test_rr('edx', 'edx'); a.jnz('dy')
+    a.mov_r_mem('eax', 'esp', 16)                # value (pushed)
+    a.imul_r_mem('eax', 'esp', 8)                # * baseW
+    a.cdq(); a.idiv_mem('esp', 0)                # / W
+    a.mov_mem_r('esp', 16, 'eax')
+    a.jmp32('ddone')
+    a.L('dy')
+    a.mov_r_mem('eax', 'esp', 16)
+    a.imul_r_mem('eax', 'esp', 12)               # * baseH
+    a.cdq(); a.idiv_mem('esp', 4)                # / H
+    a.mov_mem_r('esp', 16, 'eax')
+    a.L('ddone')
+    a.add_esp(16)
+    a.pop_r('eax')
+    a.ret()
+    a.resolve()
+    return bytes(a.b)
+
+
+def build_s1stub(va, env):
+    """S1 (0x50F67D): eax/ecx = локальные координаты hover-теста (цикл с
+    active). Делим на k (dscale), затем украденные store'ы и jmp 0x50F685.
+    dscale портит eax/ecx/edx — значения переносим через стек."""
+    DS = env['dscale']
+    a = Asm(va)
+    a.push_r('ecx')                              # y
+    a.mov_r_imm('edx', 0); a.call_va(DS)         # x'
+    a.push_r('eax')                              # x'
+    a.mov_r_mem('eax', 'esp', 4)                 # y
+    a.mov_r_imm('edx', 1); a.call_va(DS)         # y'
+    a.mov_rr('ecx', 'eax')
+    a.pop_r('eax')                               # x'
+    a.add_esp(4)
+    a.mov_mem_r('esp', 0x28, 'eax')              # украденные
+    a.mov_mem_r('esp', 0x2c, 'ecx')
+    a.jmp32(RET_S1)
+    a.resolve()
+    return bytes(a.b)
+
+
+def build_s2stub(va, env):
+    """S2 (0x50F5FC): eax/edx = локальные координаты второго hover-цикла
+    (origin [+0x1e8]). Делим на k, украденные store'ы, jmp 0x50F604."""
+    DS = env['dscale']
+    a = Asm(va)
+    a.push_r('edx')                              # y
+    a.mov_r_imm('edx', 0); a.call_va(DS)         # x'
+    a.push_r('eax')                              # x'
+    a.mov_r_mem('eax', 'esp', 4)                 # y
+    a.mov_r_imm('edx', 1); a.call_va(DS)         # y'
+    a.mov_rr('edx', 'eax')
+    a.pop_r('eax')                               # x'
+    a.add_esp(4)
+    a.mov_mem_r('esp', 0x10, 'eax')              # украденные
+    a.mov_mem_r('esp', 0x14, 'edx')
+    a.jmp32(RET_S2)
+    a.resolve()
+    return bytes(a.b)
+
+
 # ------------------------------------------------------------------- раскладка
 def extra_order():
-    return ('wtramp', 'wstub', 'wtab', 'wdisp', 'wrecv')
+    return ('wtramp', 'wstub', 'wtab', 'wdisp', 'wrecv', 'evt_write',
+            'evt_setrect', 'evt_olc', 'evt_hover', 'evt_str')
 
 
 def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
-             'rowl_stub', 'sel_stub')
-            + (('evt_write', 'evt_setrect', 'evt_olc', 'evt_hover',
-                 'evt_str') if DEBUG else ()))
+             'rowl_stub', 'sel_stub', 'dscale', 's1stub', 's2stub'))
 
 
 DATA_PARTS = {'savefix_tbl', 'evt_str', 'wtab'}
@@ -1194,7 +1257,7 @@ DATA_PARTS = {'savefix_tbl', 'evt_str', 'wtab'}
 def layout_parts():
     env0 = {'scale_rect': CAVE_VA, 'scale_one': CAVE_VA, 'savefix': CAVE_VA,
             'savefix_tbl': CAVE_VA, 'post_done': CAVE_VA, 'evt_write': CAVE_VA,
-            'evt_str': CAVE_VA}
+            'evt_str': CAVE_VA, 'dscale': CAVE_VA}
     builders = {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
         'scale_rect': build_scale_rect, 'scale_one': build_scale_one,
@@ -1202,9 +1265,7 @@ def layout_parts():
         'savefix': build_savefix, 'savefix_tbl': build_savefix_tbl,
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
         'sel_stub': build_selstub,
-        'evt_write': build_evt_write, 'evt_setrect': build_evt_setrect,
-        'evt_olc': build_evt_olc, 'evt_hover': build_evt_hover,
-        'evt_str': build_evt_str,
+        'dscale': build_dscale, 's1stub': build_s1stub, 's2stub': build_s2stub,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
         'scale_rect': build_scale_rect, 'scale_one': build_scale_one,
@@ -1212,6 +1273,7 @@ def layout_parts():
         'savefix': build_savefix, 'savefix_tbl': build_savefix_tbl,
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
         'sel_stub': build_selstub,
+        'dscale': build_dscale, 's1stub': build_s1stub, 's2stub': build_s2stub,
     }
     order = part_order()
     sizes = {n: len(builders[n](CAVE_VA, env0)) for n in order}
@@ -1236,7 +1298,10 @@ def layout_parts():
 def layout_extra(va_main):
     """Раскладка H13-блока в новой секции .ellog (только debug-сборки)."""
     builders = {'wtramp': build_wtramp, 'wstub': build_wstub, 'wtab': build_wtab,
-                'wdisp': build_wdisp, 'wrecv': build_wrecv}
+                'wdisp': build_wdisp, 'wrecv': build_wrecv,
+                'evt_write': build_evt_write,
+                'evt_setrect': build_evt_setrect, 'evt_olc': build_evt_olc,
+                'evt_hover': build_evt_hover, 'evt_str': build_evt_str}
     env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'wdisp': EXTRA_VA,
             'wrecv': EXTRA_VA, 'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA}
     sizes = {n: len(builders[n](EXTRA_VA, env0)) for n in extra_order()}
@@ -1247,9 +1312,7 @@ def layout_extra(va_main):
         xva[name] = EXTRA_VA + off
         off += sizes[name]
     assert off <= EXTRA_CAP, f".ellog overflow: {off} > {EXTRA_CAP}"
-    env = dict(xva)
-    env['evt_write'] = va_main['evt_write']
-    env['evt_str'] = va_main['evt_str']
+    env = dict(xva)          # evt_write/evt_str теперь живут тут же, в .ellog
     xparts = {n: builders[n](xva[n], env) for n in extra_order()}
     for name in extra_order():
         assert len(xparts[name]) == sizes[name], name
@@ -1301,7 +1364,7 @@ def make_patched(d, parts, va, extra=None):
         img[va2file(va_s):va2file(va_s) + 2] = bytes.fromhex(new)
     pairs = ((SITE_H1, 'trampA'), (SITE_H2, 'post_scale'), (SITE_H3, 'maskfix'),
              (SITE_H4, 'add_stub'), (SITE_H5A, 'draw_stub'), (SITE_H5B, 'rowl_stub'),
-             (SITE_H6, 'sel_stub'))
+             (SITE_H6, 'sel_stub'), (SITE_S1, 's1stub'), (SITE_S2, 's2stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
                   (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'),
@@ -1372,7 +1435,8 @@ def verify_disasm(parts, va, listing=False, extra=None):
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
                RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
-               RET_H14, RET_H15, VA_MSGBASE, VA_ITER, VA_DRAWBASE} | set(va.values())
+               RET_H14, RET_H15, VA_MSGBASE, VA_ITER, VA_DRAWBASE,
+               RET_S1, RET_S2} | set(va.values())
     xparts, xva = (extra or ({}, {}))
     allowed |= set(xva.values())
     n_ins = 0
@@ -1870,11 +1934,12 @@ def emu_tests(patched_img, va, extra=None):
     chk("gate off: design L", m.r32(esp0 + 0x14), 0x9E)
     chk("gate off: esp balance", cpu.r['esp'], esp0)
 
+    xv = extra[1] if extra else {}
     # --- T8: evt_write логгера (0.0.8) — CreateFileA/WriteFile/CloseHandle
     # эмулируются stdcall-заглушками; проверяются: усечение лога на первом
     # событии сессии (CREATE_ALWAYS), append после (OPEN_ALWAYS), лимит
     # DBG_CAP (ранний выход без CreateFileA), баланс esp, esi/edi целы.
-    if 'evt_write' not in va:
+    if 'evt_write' not in xv:
         print("test T8: пропущен (release-сборка без логгера)")
     else:
         print("test T8: evt_write (truncate-per-session + cap DBG_CAP)")
@@ -1895,7 +1960,7 @@ def emu_tests(patched_img, va, extra=None):
             cpu.r.update(eax=NAME, edx=BUF, ecx=44,
                          esi=0xE5E5, edi=0xD7D7, esp=esp0)
             m.w32(esp0, STOP)
-            cpu.run(va['evt_write'], STOP)
+            cpu.run(xv['evt_write'], STOP)
 
         cpu = new_cpu(); m = cpu.m
         m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
@@ -1924,7 +1989,7 @@ def emu_tests(patched_img, va, extra=None):
         chk("T8.3 cap: esp balance", cpu.r['esp'], esp0 + 4)
 
     # --- T9: evt_hover (H11) — рекорд kind=3: cursor+rect+i+флаги, dedup по i
-    if 'evt_hover' not in va:
+    if 'evt_hover' not in xv:
         print("test T9: пропущен (release-сборка без логгера)")
     else:
         print("test T9: evt_hover (hover-сайт CButtonList: cursor+rect, dedup)")
@@ -1958,7 +2023,7 @@ def emu_tests(patched_img, va, extra=None):
         m.w32(esp0 + 0x34, 810)                     # cursor Y
         # первый hover кнопки i=0 (0.0.12: dedup не должен его съесть)
         cpu.r.update(esi=ctrl, edi=0, ebx=0x00, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
-        cpu.run(va['evt_hover'], RET_H11)
+        cpu.run(xv['evt_hover'], RET_H11)
         b = esp0 - 88                               # рекорд на стеке
         chk("T9 i=0: kind=3", m.r32(b + 0), 3)
         chk("T9 i=0: this", m.r32(b + 4), ctrl)
@@ -1977,12 +2042,12 @@ def emu_tests(patched_img, va, extra=None):
         # dedup: тот же i повторно — записи нет
         m.w32(SLOT_LEN, 0)
         cpu.r.update(esi=ctrl, edi=0, ebx=0x00, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
-        cpu.run(va['evt_hover'], RET_H11)
+        cpu.run(xv['evt_hover'], RET_H11)
         chk("T9 dedup: повторный i=0 не пишется", m.r32(SLOT_LEN), 0)
         chk("T9 dedup: esp balance", cpu.r['esp'], esp0)
         # другой индекс — пишется снова
         cpu.r.update(esi=ctrl, edi=1, ebx=0x34, eax=0x99, ecx=0x77, edx=0x55, esp=esp0)
-        cpu.run(va['evt_hover'], RET_H11)
+        cpu.run(xv['evt_hover'], RET_H11)
         chk("T9 смена i: пишется", m.r32(SLOT_LEN), 56)
         chk("T9 смена i: i=1", m.r32(b + 16), 1)
         chk("T9 смена i: rect array[1]+0x14", [m.r32(b + 28 + 4 * j) for j in range(4)],
@@ -2135,58 +2200,37 @@ def emu_tests(patched_img, va, extra=None):
         chk("T12 stolen: esp=entry-8", cpu.r['esp'], esp0 - 8)
         chk("T12 WriteFile len=44", m.r32(SLOT_LEN), 44)
 
-    # --- T13: scale_one масштабирует sector-массив колеса [+0x208] (фикс 0.0.17)
-    print("test T13: scale_one + sector-rect'ы колеса [vtbl 0x75ac20 +0x208]")
+    # --- T14: S1/S2 — деление локальных координат hover-теста на k (0.0.19)
+    print("test T14: s1stub/s2stub (local/k в hover-тестах колеса)")
+    cpu = new_cpu(); m = cpu.m
+    setup_mode(m, w=1600, h=900)
+    m.w32(VA_SCREEN, VA_SCREEN)
+    m.w32(VA_SCREEN + 0x188, 1)                  # flag=1 -> base 1024x768
+    esp0 = STACK + 0x10000
+    cpu.r.update(eax=200, ecx=150, edx=0x77, ebx=0xBB, esp=esp0)
+    cpu.run(va['s1stub'], RET_S1)
+    chk("T14 S1: x 200->128", m.r32(esp0 + 0x28), 128)
+    chk("T14 S1: y 150->128", m.r32(esp0 + 0x2c), 128)
+    chk("T14 S1: ebx/esi целы", (cpu.r['ebx'], cpu.r['esi']), (0xBB, cpu.r['esi']))
+    chk("T14 S1: esp balance", cpu.r['esp'], esp0)
     cpu = new_cpu(); m = cpu.m
     setup_mode(m, w=1600, h=900)
     m.w32(VA_SCREEN, VA_SCREEN)
     m.w32(VA_SCREEN + 0x188, 1)
-    wl = HEAP + 0x8000
-    m.w32(wl + 0x0, VTBL_WHEEL)
-    m.w32(wl + 0x14c, 0xF05FFFFF)
-    m.w32(wl + 0x1d4, 2)
-    for j, v in enumerate((100, 50, 300, 150)):
-        m.w32(wl + 0x208 + 4 * j, v)
-    for j, v in enumerate((200, 200, 400, 400)):
-        m.w32(wl + 0x218 + 4 * j, v)
-    m.w32(wl + 0x18c, 0)                          # records целые
-    esp0 = STACK + 0x10000
-    STOP = STACK
-    m.w32(esp0, STOP)
-    cpu.r.update(eax=wl, edx=1, esp=esp0)         # force=1
-    cpu.run(va['scale_one'], STOP)
-    chk("T13 sector0 scaled", [m.r32(wl + 0x208 + 4 * j) for j in range(4)],
-        [100 * 1600 // 1024, 50 * 900 // 768, 300 * 1600 // 1024, 150 * 900 // 768])
-    chk("T13 sector1 scaled", [m.r32(wl + 0x218 + 4 * j) for j in range(4)],
-        [200 * 1600 // 1024, 200 * 900 // 768, 400 * 1600 // 1024, 400 * 900 // 768])
-    chk("T13 marker set", m.r32(wl + 0x14c) & 0xC, 4)
-    chk("T13 esp balance", cpu.r['esp'], esp0 + 4)
-    # повторный проход идемпотентен (маркер)
-    m.w32(esp0, STOP)
-    cpu.r.update(eax=wl, edx=0, esp=esp0)
-    cpu.run(va['scale_one'], STOP)
-    chk("T13 idempotent", [m.r32(wl + 0x208 + 4 * j) for j in range(4)],
-        [100 * 1600 // 1024, 50 * 900 // 768, 300 * 1600 // 1024, 150 * 900 // 768])
-
-    # --- T13b: bounds-гейт count (hotfix 0.0.18): мусор/0/>32 -> массив НЕ тронут
-    print("test T13b: bounds-гейт count [1..32] (краш-защита 0.0.18)")
-    for tag, cnt in (("garbage", 0x7FFFFFFF), ("zero", 0), ("over", 33)):
-        cpu = new_cpu(); m = cpu.m
-        setup_mode(m, w=1600, h=900)
-        m.w32(VA_SCREEN, VA_SCREEN); m.w32(VA_SCREEN + 0x188, 1)
-        wl = HEAP + 0x8000
-        m.w32(wl + 0x0, VTBL_WHEEL)
-        m.w32(wl + 0x14c, 0xF05FFFFF)
-        m.w32(wl + 0x1d4, cnt)
-        for j, v in enumerate((100, 50, 300, 150)):
-            m.w32(wl + 0x208 + 4 * j, v)
-        esp0 = STACK + 0x10000
-        m.w32(esp0, STACK)
-        cpu.r.update(eax=wl, edx=1, esp=esp0)
-        cpu.run(va['scale_one'], STACK)
-        chk(f"T13b {tag}: массив не тронут",
-            [m.r32(wl + 0x208 + 4 * j) for j in range(4)], [100, 50, 300, 150])
-        chk(f"T13b {tag}: marker поставлен", m.r32(wl + 0x14c) & 0xC, 4)
+    cpu.r.update(eax=200, edx=150, ecx=0x55, ebx=0xBB, esp=esp0)
+    cpu.run(va['s2stub'], RET_S2)
+    chk("T14 S2: x 200->128", m.r32(esp0 + 0x10), 128)
+    chk("T14 S2: y 150->128", m.r32(esp0 + 0x14), 128)
+    chk("T14 S2: ebx цел (live на сайте)", cpu.r['ebx'], 0xBB)
+    # k==1: транзит
+    cpu = new_cpu(); m = cpu.m
+    setup_mode(m, w=1024, h=768)
+    m.w32(VA_SCREEN, VA_SCREEN)
+    m.w32(VA_SCREEN + 0x188, 1)
+    cpu.r.update(eax=200, ecx=150, esp=esp0)
+    cpu.run(va['s1stub'], RET_S1)
+    chk("T14 S1 @1024x768: транзит", (m.r32(esp0 + 0x28), m.r32(esp0 + 0x2c)),
+        (200, 150))
 
     return ok
 
