@@ -38,7 +38,7 @@ def iter_records(data):
     off = 0
     while off + 44 <= len(data):
         kind = struct.unpack_from('<I', data, off)[0]
-        if kind == 3 and off + 56 <= len(data):
+        if kind in (3, 5) and off + 56 <= len(data):
             yield struct.unpack_from('<14I', data, off)
             off += 56
         else:
@@ -94,6 +94,12 @@ def main():
             ax, ay, sec = r[8], r[9], s32(r[10])
             lines.append(f"{i:6d} wheelin   this={this:#010x} vt={nm:22s} slot={slot} "
                          f"ret={ret:#010x} args=({a0},{a1},{a2}) active=({ax},{ay}) "
+                         f"sector0L={sec}")
+        elif k == 5:
+            code, a2, a3, cx, cy = r[5], r[6], r[7], r[8], r[9]
+            ax, ay, sec = r[10], r[11], s32(r[12])
+            lines.append(f"{i:6d} msgevt    this={this:#010x} vt={nm:22s} code={code:#x} "
+                         f"args=({a2},{a3}) cursor=({cx},{cy}) active=({ax},{ay}) "
                          f"sector0L={sec}")
         else:
             lines.append(f"{i:6d} kind={k}  this={this:#010x} vt={nm:22s} ret={ret:#010x}")

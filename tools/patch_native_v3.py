@@ -75,8 +75,14 @@ i, флаги) для диагностики колеса (docs/09, доп. 0.0.
 (x,y,…), active [+0x1ac/+0x1b0], sector0 L [+0x208] — и уходит в оригинал
 слота. Один сеанс показывает, КАКОЙ слот = hover и в каких пространствах
 курсор/active/сектора (docs/09, доп. 0.0.14). Debug: cave 2283/2474 +
-.ellog 272/4096, capstone 620, тесты T1–T10 (96 проверок), sha256
-6477c5930fe722cf… (файл 4 317 184 Б = +4 КБ секции).
+.ellog 491/4096, capstone 669, тесты T1–T11 (109 проверок), sha256
+718952f57fffc01b… (файл 4 317 184 Б = +4 КБ секции).
+
+0.0.15: + H14 — хук ВХОДА message-диспетчера колеса 0x50E3C0 (hover считается
+в нём, а не в мышиных виртуалах: прогон 0.0.14 дал kind4=0 при доказанно
+чистой сборке). Рекорд kind=5 (56 Б): code, arg2, arg3, cursor
+[screen+0xe0/e4], active, sector0 L; фильтр мышиных кодов 0x141..0x147,
+0x18b..0x18f, 0x20a, 0x40d (docs/09, доп. 0.0.15).
 """
 import argparse
 import hashlib
@@ -132,6 +138,14 @@ VTBL_WHEEL = 0x75AC20
 WHEEL_SLOTS = (3, 7, 9, 0x0A, 0x0B, 0x0C, 0x0D, 0x12)
 WHEEL_ORIG = {3: 0x510100, 7: 0x50F530, 9: 0x50F740, 0x0A: 0x50FDB0,
               0x0B: 0x50FB70, 0x0C: 0x50FED0, 0x0D: 0x50FDD0, 0x12: 0x50F310}
+# H14 (0.0.15): ВХОД message-диспетчера колеса 0x50E3C0 (10 байт:
+# sub esp,0x10; push ebx; mov ebx,[0x827230]) — НЕ виртуал, вызывается напрямую
+# pump'ом экрана; H11/H12/H13 молчали именно поэтому. this=ecx, arg1=код
+# сообщения, arg2/arg3 = координаты/кнопки. Рекорд kind=5 (56 Б): code, arg2,
+# arg3, cursor [screen+0xe0/e4], active [+0x1ac/+0x1b0], sector0 L [+0x208].
+# Фильтр: только мышиные коды 0x141..0x147, 0x18b..0x18f, 0x20a, 0x40d.
+SITE_H14 = ("H14", 0x50E3C0, "83ec10538b1d30728200", 10)
+RET_H14 = 0x50E3CA
 EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
 EXTRA_VA = 0x400000 + EXTRA_RVA
 EXTRA_CAP = 0x1000
@@ -153,7 +167,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.14"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.15"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -177,7 +191,8 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 # (--debug, H8/H9). См. docs/09 §4 (v4 post-mortem).
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11] if DEBUG else [])
+                               SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
+                                                        SITE_H14] if DEBUG else [])
 
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
@@ -1033,6 +1048,59 @@ def build_wstub(va, env):
     return bytes(a.b)
 
 
+def build_wdisp(va, env):
+    """H14: пролог message-диспетчера колеса 0x50E3C0. Рекорд kind=5 (56 Б)
+    на каждое мышиное сообщение: code, arg2, arg3, cursor([screen+0xe0/e4]),
+    active([+0x1ac/+0x1b0]), sector0 L([+0x208]). Украденные 10 байт + jmp
+    0x50E3CA. Регистры — под pushad; edx/ebx после украденных байтов как в
+    оригинале (ebx=[0x827230])."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    a.mov_r_mem('eax', 'esp', 36)                 # code = [esp0+4]
+    a.add_eax_imm32(-0x141)
+    a.cmp_eax_u8(6)
+    a.jbe('wlog')
+    a.mov_r_mem('eax', 'esp', 36)
+    a.add_eax_imm32(-0x18b)
+    a.cmp_eax_u8(4)
+    a.jbe('wlog')
+    a.mov_r_mem('eax', 'esp', 36)
+    a.cmp_eax_imm32(0x20a)
+    a.je('wlog')
+    a.cmp_eax_imm32(0x40d)
+    a.jne('wskip')
+    a.L('wlog')
+    a.sub_esp(56)
+    a.mov_mem_imm('esp', 0, 5)
+    a.mov_mem_r('esp', 4, 'ecx')
+    a.mov_r_mem('eax', 'ecx', 0);   a.mov_mem_r('esp', 8, 'eax')
+    a.mov_r_imm('eax', 0x50E3C0);   a.mov_mem_r('esp', 12, 'eax')
+    a.mov_mem_imm('esp', 16, 0)
+    a.mov_r_mem('eax', 'esp', 92);  a.mov_mem_r('esp', 20, 'eax')   # code
+    a.mov_r_mem('eax', 'esp', 96);  a.mov_mem_r('esp', 24, 'eax')   # arg2
+    a.mov_r_mem('eax', 'esp', 100); a.mov_mem_r('esp', 28, 'eax')   # arg3
+    a.mov_r_abs32('eax', VA_SCREEN)
+    a.mov_r_mem('edx', 'eax', 0xe0); a.mov_mem_r('esp', 32, 'edx')  # cursor X
+    a.mov_r_mem('edx', 'eax', 0xe4); a.mov_mem_r('esp', 36, 'edx')  # cursor Y
+    a.mov_r_mem('edx', 'ecx', 0x1ac); a.mov_mem_r('esp', 40, 'edx')
+    a.mov_r_mem('edx', 'ecx', 0x1b0); a.mov_mem_r('esp', 44, 'edx')
+    a.mov_r_mem('edx', 'ecx', 0x208); a.mov_mem_r('esp', 48, 'edx')
+    a.mov_r_imm('eax', env['evt_str'])
+    a.lea_r_mem('edx', 'esp', 0)
+    a.mov_r_imm('ecx', 56)
+    a.call_va(W)
+    a.add_esp(56)
+    a.L('wskip')
+    a.popad()
+    a.sub_esp(0x10)                               # украденные
+    a.push_r('ebx')
+    a.mov_r_abs32('ebx', 0x827230)
+    a.jmp32(RET_H14)
+    a.resolve()
+    return bytes(a.b)
+
+
 def build_wtab(va, env):
     """Таблица оригиналов: wtab[slot*4] = адрес исходной виртуальной функции."""
     blob = bytearray(max(WHEEL_SLOTS) * 4 + 4)
@@ -1043,7 +1111,7 @@ def build_wtab(va, env):
 
 # ------------------------------------------------------------------- раскладка
 def extra_order():
-    return ('wtramp', 'wstub', 'wtab')
+    return ('wtramp', 'wstub', 'wtab', 'wdisp')
 
 
 def part_order():
@@ -1101,9 +1169,10 @@ def layout_parts():
 
 def layout_extra(va_main):
     """Раскладка H13-блока в новой секции .ellog (только debug-сборки)."""
-    builders = {'wtramp': build_wtramp, 'wstub': build_wstub, 'wtab': build_wtab}
-    env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'evt_write': EXTRA_VA,
-            'evt_str': EXTRA_VA}
+    builders = {'wtramp': build_wtramp, 'wstub': build_wstub, 'wtab': build_wtab,
+                'wdisp': build_wdisp}
+    env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'wdisp': EXTRA_VA,
+            'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA}
     sizes = {n: len(builders[n](EXTRA_VA, env0)) for n in extra_order()}
     off = 0
     xva = {}
@@ -1169,9 +1238,12 @@ def make_patched(d, parts, va, extra=None):
              (SITE_H6, 'sel_stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
-                  (SITE_H11, 'evt_hover'))
+                  (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'))
+    vmap = dict(va)
+    if extra is not None:
+        vmap.update(extra[1])
     for (name, site_va, _want, size), part in pairs:
-        rel = va[part] - (site_va + 5)
+        rel = vmap[part] - (site_va + 5)
         rep = b'\xE9' + _p32(rel) + b'\x90' * (size - 5)
         img[va2file(site_va):va2file(site_va) + size] = rep
     blob = build_cave_blob(parts, va)
@@ -1233,7 +1305,7 @@ def verify_disasm(parts, va, listing=False, extra=None):
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
                RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
-               VA_ITER, VA_DRAWBASE} | set(va.values())
+               RET_H14, VA_ITER, VA_DRAWBASE} | set(va.values())
     xparts, xva = (extra or ({}, {}))
     allowed |= set(xva.values())
     n_ins = 0
@@ -1899,6 +1971,59 @@ def emu_tests(patched_img, va, extra=None):
         chk("T10 eax=оригинал слота", cpu.r['eax'], STOP)
         chk("T10 esp=entry-4 (slot оставлен)", cpu.r['esp'], esp0 - 4)
         chk("T10 ecx(this) сохранён", cpu.r['ecx'], scr)
+
+    # --- T11: wdisp (H14) — рекорд kind=5 на мышиный код, фильтр прочих кодов
+    if not extra or 'wdisp' not in extra[1]:
+        print("test T11: пропущен (release-сборка без .ellog)")
+    else:
+        print("test T11: wdisp (message-диспетчер колеса: kind=5 + фильтр кодов)")
+        xva = extra[1]
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.w32(IAT_CREATEFILEA, STUBS)
+        m.w32(IAT_WRITEFILE, STUBS + 32)
+        m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        scr = HEAP + 0x7000
+        sobj = HEAP + 0x7400
+        m.w32(scr + 0x0, VTBL_WHEEL)
+        m.w32(scr + 0x1ac, 300); m.w32(scr + 0x1b0, 190); m.w32(scr + 0x208, 100)
+        m.w32(VA_SCREEN, sobj)
+        m.w32(sobj + 0xe0, 1550); m.w32(sobj + 0xe4, 823)
+        m.w32(0x827230, 0x4321)
+        m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        m.w32(esp0, 0xC0FFEE); m.w32(esp0 + 4, 0x141)
+        m.w32(esp0 + 8, 1550); m.w32(esp0 + 12, 823)
+        cpu.r.update(ecx=scr, esp=esp0)
+        cpu.run(xva['wdisp'], RET_H14)
+        b = esp0 - 88
+        chk("T11 kind=5", m.r32(b + 0), 5)
+        chk("T11 this/vt", (m.r32(b + 4), m.r32(b + 8)), (scr, VTBL_WHEEL))
+        chk("T11 ret-маркер", m.r32(b + 12), 0x50E3C0)
+        chk("T11 code=0x141", m.r32(b + 20), 0x141)
+        chk("T11 args=(1550,823)", (m.r32(b + 24), m.r32(b + 28)), (1550, 823))
+        chk("T11 cursor=(1550,823)", (m.r32(b + 32), m.r32(b + 36)), (1550, 823))
+        chk("T11 active=(300,190)", (m.r32(b + 40), m.r32(b + 44)), (300, 190))
+        chk("T11 sector0L", m.r32(b + 48), 100)
+        chk("T11 stolen: ebx=[0x827230]", cpu.r['ebx'], 0x4321)
+        chk("T11 stolen: esp=entry-0x14", cpu.r['esp'], esp0 - 0x14)
+        chk("T11 WriteFile len=56", m.r32(SLOT_LEN), 56)
+        # фильтр: немушиный код не пишется
+        m.w32(SLOT_LEN, 0)
+        m.w32(esp0 + 4, 0x999)
+        cpu.r.update(ecx=scr, esp=esp0, ebx=0)
+        cpu.run(xva['wdisp'], RET_H14)
+        chk("T11 фильтр: code=0x999 не пишется", m.r32(SLOT_LEN), 0)
+        chk("T11 фильтр: stolen выполнен", cpu.r['ebx'], 0x4321)
 
     return ok
 
