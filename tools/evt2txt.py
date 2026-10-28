@@ -101,6 +101,10 @@ def main():
             lines.append(f"{i:6d} msgevt    this={this:#010x} vt={nm:22s} code={code:#x} "
                          f"args=({a2},{a3}) cursor=({cx},{cy}) active=({ax},{ay}) "
                          f"sector0L={sec}")
+        elif k == 6:
+            code, a2, a3, cx, cy = r[5], r[6], r[7], r[8], r[9]
+            lines.append(f"{i:6d} msgrcv    this={this:#010x} vt={nm:22s} code={code:#x} "
+                         f"args=({a2},{a3}) cursor=({cx},{cy})")
         else:
             lines.append(f"{i:6d} kind={k}  this={this:#010x} vt={nm:22s} ret={ret:#010x}")
     head = [f"# source : {src} ({len(data)} bytes)",

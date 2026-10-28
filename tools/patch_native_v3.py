@@ -75,8 +75,8 @@ i, флаги) для диагностики колеса (docs/09, доп. 0.0.
 (x,y,…), active [+0x1ac/+0x1b0], sector0 L [+0x208] — и уходит в оригинал
 слота. Один сеанс показывает, КАКОЙ слот = hover и в каких пространствах
 курсор/active/сектора (docs/09, доп. 0.0.14). Debug: cave 2283/2474 +
-.ellog 491/4096, capstone 669, тесты T1–T11 (109 проверок), sha256
-718952f57fffc01b… (файл 4 317 184 Б = +4 КБ секции).
+.ellog 555/4096, capstone 687, тесты T1–T12 (110+ проверок), sha256
+0a228c5c9e5a6062… (файл 4 317 184 Б = +4 КБ секции).
 
 0.0.15: + H14 — хук ВХОДА message-диспетчера колеса 0x50E3C0 (hover считается
 в нём, а не в мышиных виртуалах: прогон 0.0.14 дал kind4=0 при доказанно
@@ -146,6 +146,16 @@ WHEEL_ORIG = {3: 0x510100, 7: 0x50F530, 9: 0x50F740, 0x0A: 0x50FDB0,
 # Фильтр: только мышиные коды 0x141..0x147, 0x18b..0x18f, 0x20a, 0x40d.
 SITE_H14 = ("H14", 0x50E3C0, "83ec10538b1d30728200", 10)
 RET_H14 = 0x50E3CA
+# H15 (0.0.16): базовый message-хендлер 0x58E7B0 (9 байт пролога: push ebx;
+# push edi; mov edi,ecx; call 0x591780) — вызывается pump'ом для контрола,
+# ставшего ЦЕЛЬЮ hit-test'а (47 сайтов). Прогон 0.0.15: kind5=0 => диспетчер
+# колеса не вызывался ВООБЩЕ => колесо не выбирается целью ни на одном
+# сообщении: рассинхрон начинается в target-селекции. H15 пишет kind=6 (44 Б):
+# this, vtable, code, arg2, arg3, cursor [screen+0xe0/e4] — БЕЗ фильтра
+# (объём держит DBG_CAP): по vt-приёмникам видно, кто съедает сообщения колеса.
+SITE_H15 = ("H15", 0x58E7B0, "53578bf9e8c72f0000", 9)
+RET_H15 = 0x58E7B9
+VA_MSGBASE = 0x591780                   # украденный call из пролога 0x58e7b0
 EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
 EXTRA_VA = 0x400000 + EXTRA_RVA
 EXTRA_CAP = 0x1000
@@ -167,7 +177,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.15"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.16"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -192,7 +202,7 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
                                SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
-                                                        SITE_H14] if DEBUG else [])
+                                                        SITE_H14, SITE_H15] if DEBUG else [])
 
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
@@ -1057,20 +1067,6 @@ def build_wdisp(va, env):
     W = env['evt_write']
     a = Asm(va)
     a.pushad()
-    a.mov_r_mem('eax', 'esp', 36)                 # code = [esp0+4]
-    a.add_eax_imm32(-0x141)
-    a.cmp_eax_u8(6)
-    a.jbe('wlog')
-    a.mov_r_mem('eax', 'esp', 36)
-    a.add_eax_imm32(-0x18b)
-    a.cmp_eax_u8(4)
-    a.jbe('wlog')
-    a.mov_r_mem('eax', 'esp', 36)
-    a.cmp_eax_imm32(0x20a)
-    a.je('wlog')
-    a.cmp_eax_imm32(0x40d)
-    a.jne('wskip')
-    a.L('wlog')
     a.sub_esp(56)
     a.mov_mem_imm('esp', 0, 5)
     a.mov_mem_r('esp', 4, 'ecx')
@@ -1091,12 +1087,44 @@ def build_wdisp(va, env):
     a.mov_r_imm('ecx', 56)
     a.call_va(W)
     a.add_esp(56)
-    a.L('wskip')
     a.popad()
     a.sub_esp(0x10)                               # украденные
     a.push_r('ebx')
     a.mov_r_abs32('ebx', 0x827230)
     a.jmp32(RET_H14)
+    a.resolve()
+    return bytes(a.b)
+
+
+def build_wrecv(va, env):
+    """H15: пролог 0x58E7B0 (9 Б). Рекорд kind=6 (44 Б): this=ecx, vtable,
+    code/arg2/arg3 (стек), cursor [screen+0xe0/e4]. Без фильтра."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    a.sub_esp(44)
+    a.mov_mem_imm('esp', 0, 6)
+    a.mov_mem_r('esp', 4, 'ecx')
+    a.mov_r_mem('eax', 'ecx', 0);   a.mov_mem_r('esp', 8, 'eax')
+    a.mov_r_imm('eax', 0x58E7B0);   a.mov_mem_r('esp', 12, 'eax')
+    a.mov_mem_imm('esp', 16, 0)
+    a.mov_r_mem('eax', 'esp', 80);  a.mov_mem_r('esp', 20, 'eax')   # code
+    a.mov_r_mem('eax', 'esp', 84);  a.mov_mem_r('esp', 24, 'eax')   # arg2
+    a.mov_r_mem('eax', 'esp', 88);  a.mov_mem_r('esp', 28, 'eax')   # arg3
+    a.mov_r_abs32('eax', VA_SCREEN)
+    a.mov_r_mem('edx', 'eax', 0xe0); a.mov_mem_r('esp', 32, 'edx')
+    a.mov_r_mem('edx', 'eax', 0xe4); a.mov_mem_r('esp', 36, 'edx')
+    a.mov_r_imm('eax', env['evt_str'])
+    a.lea_r_mem('edx', 'esp', 0)
+    a.mov_r_imm('ecx', 44)
+    a.call_va(W)
+    a.add_esp(44)
+    a.popad()
+    a.push_r('ebx')                                # украденные
+    a.push_r('edi')
+    a.mov_rr('edi', 'ecx')
+    a.call_va(0x591780)
+    a.jmp32(RET_H15)
     a.resolve()
     return bytes(a.b)
 
@@ -1111,7 +1139,7 @@ def build_wtab(va, env):
 
 # ------------------------------------------------------------------- раскладка
 def extra_order():
-    return ('wtramp', 'wstub', 'wtab', 'wdisp')
+    return ('wtramp', 'wstub', 'wtab', 'wdisp', 'wrecv')
 
 
 def part_order():
@@ -1170,9 +1198,9 @@ def layout_parts():
 def layout_extra(va_main):
     """Раскладка H13-блока в новой секции .ellog (только debug-сборки)."""
     builders = {'wtramp': build_wtramp, 'wstub': build_wstub, 'wtab': build_wtab,
-                'wdisp': build_wdisp}
+                'wdisp': build_wdisp, 'wrecv': build_wrecv}
     env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'wdisp': EXTRA_VA,
-            'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA}
+            'wrecv': EXTRA_VA, 'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA}
     sizes = {n: len(builders[n](EXTRA_VA, env0)) for n in extra_order()}
     off = 0
     xva = {}
@@ -1238,7 +1266,8 @@ def make_patched(d, parts, va, extra=None):
              (SITE_H6, 'sel_stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
-                  (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'))
+                  (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'),
+                  (SITE_H15, 'wrecv'))
     vmap = dict(va)
     if extra is not None:
         vmap.update(extra[1])
@@ -1305,7 +1334,7 @@ def verify_disasm(parts, va, listing=False, extra=None):
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
                RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
-               RET_H14, VA_ITER, VA_DRAWBASE} | set(va.values())
+               RET_H14, RET_H15, VA_MSGBASE, VA_ITER, VA_DRAWBASE} | set(va.values())
     xparts, xva = (extra or ({}, {}))
     allowed |= set(xva.values())
     n_ins = 0
@@ -2017,13 +2046,56 @@ def emu_tests(patched_img, va, extra=None):
         chk("T11 stolen: ebx=[0x827230]", cpu.r['ebx'], 0x4321)
         chk("T11 stolen: esp=entry-0x14", cpu.r['esp'], esp0 - 0x14)
         chk("T11 WriteFile len=56", m.r32(SLOT_LEN), 56)
-        # фильтр: немушиный код не пишется
+        # 0.0.16: фильтр кодов снят — пишется любой код
         m.w32(SLOT_LEN, 0)
         m.w32(esp0 + 4, 0x999)
         cpu.r.update(ecx=scr, esp=esp0, ebx=0)
         cpu.run(xva['wdisp'], RET_H14)
-        chk("T11 фильтр: code=0x999 не пишется", m.r32(SLOT_LEN), 0)
-        chk("T11 фильтр: stolen выполнен", cpu.r['ebx'], 0x4321)
+        chk("T11 без фильтра: code=0x999 пишется", m.r32(SLOT_LEN), 56)
+        chk("T11 без фильтра: code в рекорде", m.r32(b + 20), 0x999)
+        chk("T11 без фильтра: stolen выполнен", cpu.r['ebx'], 0x4321)
+
+    # --- T12: wrecv (H15) — рекорд kind=6 на входе базового message-хендлера
+    if not extra or 'wrecv' not in extra[1]:
+        print("test T12: пропущен (release-сборка без .ellog)")
+    else:
+        print("test T12: wrecv (базовый message-хендлер 0x58e7b0: kind=6)")
+        xva = extra[1]
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.w32(IAT_CREATEFILEA, STUBS)
+        m.w32(IAT_WRITEFILE, STUBS + 32)
+        m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        m.wb(VA_MSGBASE, b'\xc3')                 # украденный call 0x591780 -> ret
+        ctl = HEAP + 0x7800
+        m.w32(ctl, 0x75D984)                       # vtable base-класса
+        sobj = HEAP + 0x7400
+        m.w32(VA_SCREEN, sobj)
+        m.w32(sobj + 0xe0, 1400); m.w32(sobj + 0xe4, 700)
+        m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        m.w32(esp0, 0xC0FFEE); m.w32(esp0 + 4, 0x141)
+        m.w32(esp0 + 8, 1400); m.w32(esp0 + 12, 700)
+        cpu.r.update(ecx=ctl, esp=esp0)
+        cpu.run(xva['wrecv'], RET_H15)
+        b = esp0 - 76
+        chk("T12 kind=6", m.r32(b + 0), 6)
+        chk("T12 this/vt", (m.r32(b + 4), m.r32(b + 8)), (ctl, 0x75D984))
+        chk("T12 code/args", (m.r32(b + 20), m.r32(b + 24), m.r32(b + 28)),
+            (0x141, 1400, 700))
+        chk("T12 cursor=(1400,700)", (m.r32(b + 32), m.r32(b + 36)), (1400, 700))
+        chk("T12 stolen: edi=this", cpu.r['edi'], ctl)
+        chk("T12 stolen: esp=entry-8", cpu.r['esp'], esp0 - 8)
+        chk("T12 WriteFile len=44", m.r32(SLOT_LEN), 44)
 
     return ok
 

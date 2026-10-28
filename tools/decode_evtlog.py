@@ -65,6 +65,10 @@ def main():
             code, a2, a3, cx, cy, ax, ay, sec = r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12]
             print(f"{i:6d} msgevt    this={this:#010x} vt={name:22s} code={code:#x} "
                   f"args=({a2},{a3}) cursor=({cx},{cy}) active=({ax},{ay}) sector0L={sec}")
+        elif k == 6:
+            code, a2, a3, cx, cy = r[5], r[6], r[7], r[8], r[9]
+            print(f"{i:6d} msgrcv    this={this:#010x} vt={name:22s} code={code:#x} "
+                  f"args=({a2},{a3}) cursor=({cx},{cy})")
         else:
             print(f"{i:6d} kind={k}  this={this:#010x} vt={name:22s} ret={ret:#010x} raw={r[5:]}")
 

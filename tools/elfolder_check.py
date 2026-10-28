@@ -27,7 +27,8 @@ V6DBG_SHA = {                     # sha256[:8] -> что это за сборк�
     "7fc13634": "v6dbg 0.0.12: H11 + фикс dedup, но БЕЗ H12 (если hover колеса живёт в adv-хендлере, пар колеса в логе не будет)",
     "24e0c3f8": "v6dbg 0.0.13: H12 стоял в обработчике КЛИКА (hover не писал) — устарел",
     "6477c593": "v6dbg 0.0.14: H13 (vtable-слоты) — но hover считается НЕ в виртуалах (kind4=0 в поле)",
-    "718952f5": "v6dbg 0.0.15: + H14 (вход message-диспетчера колеса, kind=5) — ТО, ЧТО НУЖНО",
+    "718952f5": "v6dbg 0.0.15: H14 с фильтром кодов — фильтр не пропустил hover-код",
+    "0a228c5c": "v6dbg 0.0.16: H14 без фильтра + H15 (базовый message-хендлер, kind=6) — ТО, ЧТО НУЖНО",
 }
 
 
@@ -99,13 +100,15 @@ def main():
         import struct as _st
         h13 = 0x83B000 <= _st.unpack_from('<I', img, 0x35ac20 + 4 * 7)[0] < 0x83C000
         h14 = img[0x10e3c0] == 0xE9
+        h15 = img[0x18e7b0] == 0xE9
         verdict = V6DBG_SHA.get(h[:8], "неизвестная сборка (пересобрать из текущего скрипта)")
         out.append(f"Etherlords_native_v6dbg.exe: sha256={h[:16]}… -> {verdict}")
         out.append(f"  сайты: P1(форс раскладки)={'OK' if p1 else 'НЕТ'}, "
                    f"H8(логгер set_rect)={'есть' if h8 else 'НЕТ'}, "
                    f"H11(hover-логгер)={'есть' if h11 else 'НЕТ'}, "
                    f"H13(vtable-слоты колеса)={'есть' if h13 else 'НЕТ'}, "
-                   f"H14(диспетчер колеса)={'есть' if h14 else 'НЕТ'}")
+                   f"H14(диспетчер колеса)={'есть' if h14 else 'НЕТ'}, "
+                   f"H15(base-хендлер)={'есть' if h15 else 'НЕТ'}")
         mtime_exe = os.path.getmtime(vp)
     else:
         out.append("Etherlords_native_v6dbg.exe: НЕТ (запустить patch_native_v3.py в папке)")
@@ -118,7 +121,7 @@ def main():
         mt = os.path.getmtime(lp)
         out.append(f"el_evt.log: {size} байт, изменён {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mt))}, "
                    f"рекорды: " + ", ".join(f"kind{k}={n}" for k, n in sorted(kinds.items())) +
-                   f", hover(kind3)={kinds.get(3, 0)}, wheelin(kind4)={kinds.get(4, 0)}, msgevt(kind5)={kinds.get(5, 0)}")
+                   f", hover(kind3)={kinds.get(3, 0)}, wheelin(kind4)={kinds.get(4, 0)}, msgevt(kind5)={kinds.get(5, 0)}, msgrcv(kind6)={kinds.get(6, 0)}")
         if mtime_exe is not None:
             if mt < mtime_exe:
                 out.append("  ВНИМАНИЕ: лог СТАРЕЕ exe v6dbg — сеанс новой сборки не писал лог "

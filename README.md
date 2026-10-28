@@ -48,7 +48,8 @@
 │   │                               дифф-аудит, интерпретатор T1–T10 (96 проверок в debug);
 │   │                               логгер H8/H9 (el_evt.log) — в каждой сборке по умолчанию;
 │   │                               H11 (kind3) + H13 vtable-слоты (kind4) + H14
-│   │                               message-диспетчер колеса (kind5); секция .ellog
+│   │                               диспетчер колеса (kind5) + H15 приёмник
+│   │                               сообщений pump'а (kind6); секция .ellog
 │   │                               только в debug;
 │   │                               --no-logger -> чистый release v6
 │   ├── decode_evtlog.py            разбор el_evt.log debug-сборки (set_rect/OnLayoutChange/
