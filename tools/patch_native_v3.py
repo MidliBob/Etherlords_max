@@ -177,7 +177,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.16"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.17"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -513,7 +513,7 @@ def build_scale_one(va, env):
     a.mov_r_mem('eax', 'esp', 16)
     a.mov_r_mem('eax', 'eax', 0)                 # vtable
     a.cmp_eax_imm32(VTBL_BUTTONLIST)
-    a.jne('mark')
+    a.jne('wcheck')
     a.mov_r_mem('ebx', 'esp', 16)
     a.mov_r_mem('edx', 'ebx', 0x1c4)             # count
     a.test_rr('edx', 'edx'); a.jz('mark')
@@ -530,6 +530,31 @@ def build_scale_one(va, env):
     a.mov_r_mem('eax', 'esp', 36)
     a.test_rr('eax', 'eax')
     a.jnz('sloop')
+    # wheel (vtbl 0x75AC20, 0.0.17): массив sector-rect'ов [+0x208], шаг 0x10,
+    # count [+0x1d4] — hover-тест диспетчера сравнивает (msg_args − active_scaled)
+    # с этими DESIGN-rect'ами, тогда как отрисовка живёт в k·R: без масштабирования
+    # зона hover уезжает на (k−1)·R (docs/09, доп. 0.0.17).
+    a.L('wcheck')
+    a.mov_r_mem('eax', 'esp', 16)
+    a.mov_r_mem('eax', 'eax', 0)                 # vtable
+    a.cmp_eax_imm32(VTBL_WHEEL)
+    a.jne('mark')
+    a.mov_r_mem('edx', 'esp', 16)
+    a.mov_r_mem('ecx', 'edx', 0x1d4)             # count
+    a.test_rr('ecx', 'ecx'); a.jz('mark')
+    a.lea_r_mem('ebx', 'edx', 0x208)             # base массива
+    a.mov_mem_r('esp', 36, 'ecx')                # i = count
+    a.L('wloop')
+    a.mov_r_mem('eax', 'esp', 36)
+    a.add_eax_u8(0xFF)
+    a.mov_mem_r('esp', 36, 'eax')
+    a.imul_r_r_imm('eax', 'eax', 0x10)
+    a.add_rr('eax', 'ebx')
+    a.mov_rr('ecx', 'eax')                       # rect
+    a.call_va(SR)
+    a.mov_r_mem('eax', 'esp', 36)
+    a.test_rr('eax', 'eax')
+    a.jnz('wloop')
     a.L('mark')
     a.mov_r_mem('eax', 'esp', 16)
     a.mov_r_mem('eax', 'eax', 0x14c)
@@ -2096,6 +2121,39 @@ def emu_tests(patched_img, va, extra=None):
         chk("T12 stolen: edi=this", cpu.r['edi'], ctl)
         chk("T12 stolen: esp=entry-8", cpu.r['esp'], esp0 - 8)
         chk("T12 WriteFile len=44", m.r32(SLOT_LEN), 44)
+
+    # --- T13: scale_one масштабирует sector-массив колеса [+0x208] (фикс 0.0.17)
+    print("test T13: scale_one + sector-rect'ы колеса [vtbl 0x75ac20 +0x208]")
+    cpu = new_cpu(); m = cpu.m
+    setup_mode(m, w=1600, h=900)
+    m.w32(VA_SCREEN, VA_SCREEN)
+    m.w32(VA_SCREEN + 0x188, 1)
+    wl = HEAP + 0x8000
+    m.w32(wl + 0x0, VTBL_WHEEL)
+    m.w32(wl + 0x14c, 0xF05FFFFF)
+    m.w32(wl + 0x1d4, 2)
+    for j, v in enumerate((100, 50, 300, 150)):
+        m.w32(wl + 0x208 + 4 * j, v)
+    for j, v in enumerate((200, 200, 400, 400)):
+        m.w32(wl + 0x218 + 4 * j, v)
+    m.w32(wl + 0x18c, 0)                          # records целые
+    esp0 = STACK + 0x10000
+    STOP = STACK
+    m.w32(esp0, STOP)
+    cpu.r.update(eax=wl, edx=1, esp=esp0)         # force=1
+    cpu.run(va['scale_one'], STOP)
+    chk("T13 sector0 scaled", [m.r32(wl + 0x208 + 4 * j) for j in range(4)],
+        [100 * 1600 // 1024, 50 * 900 // 768, 300 * 1600 // 1024, 150 * 900 // 768])
+    chk("T13 sector1 scaled", [m.r32(wl + 0x218 + 4 * j) for j in range(4)],
+        [200 * 1600 // 1024, 200 * 900 // 768, 400 * 1600 // 1024, 400 * 900 // 768])
+    chk("T13 marker set", m.r32(wl + 0x14c) & 0xC, 4)
+    chk("T13 esp balance", cpu.r['esp'], esp0 + 4)
+    # повторный проход идемпотентен (маркер)
+    m.w32(esp0, STOP)
+    cpu.r.update(eax=wl, edx=0, esp=esp0)
+    cpu.run(va['scale_one'], STOP)
+    chk("T13 idempotent", [m.r32(wl + 0x208 + 4 * j) for j in range(4)],
+        [100 * 1600 // 1024, 50 * 900 // 768, 300 * 1600 // 1024, 150 * 900 // 768])
 
     return ok
 
