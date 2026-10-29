@@ -163,10 +163,17 @@ SITE_H15 = ("H15", 0x58E7B0, "53578bf9e8c72f0000", 9)
 # (C − O_s)/k ∈ R_d  <=>  C ∈ O_s + k·R_d = зона нарисованных спрайтов.
 # S1: 0x50F67D (8 Б: mov [esp+0x28],eax; mov [esp+0x2c],ecx) — loop c active.
 # S2: 0x50F5FC (8 Б: mov [esp+0x10],eax; mov [esp+0x14],edx) — loop c [+0x1e8].
-SITE_S1 = ("S1", 0x50F67D, "894424288 94c242c".replace(" ", ""), 8)
-SITE_S2 = ("S2", 0x50F5FC, "89442410895424 14".replace(" ", ""), 8)
-RET_S1 = 0x50F685
-RET_S2 = 0x50F604
+# S3 (0.0.20): tick колеса (vtable slot 0x13, 0x50d990) сохраняет курсор
+# [screen+0xe0/e4] в [esp+0x40/0x44] и отдаёт его hover/click-тесту через
+# глобальную таблицу секторов [0x826c7c] (0x5b2f80 -> 0x44f670). Пространство
+# таблицы смещено относительно отрисовки на delta=(k-1)*P, P=(302,192)
+# (замер по скриншоту 1600x900: delta=(+170,+33), 170/0.5625=302.2, 33/0.171875=192).
+# Фикс: добавлять delta к курсору в момент сохранения — hover И click попадают
+# в нарисованное. Сайты 11 байт: mov [esp+0x40],eax; mov ecx,[edx+0xe4];
+# mov [esp+0x44],ecx.
+SITE_S3 = ("S3", 0x50DA05, "894424408b8ae4000000894c2444", 14)
+RET_S3 = 0x50DA13
+WHEEL_PX, WHEEL_PY = 302, 192          # design-якорь рассинхрона таблицы секторов
 RET_H15 = 0x58E7B9
 VA_MSGBASE = 0x591780                   # украденный call из пролога 0x58e7b0
 EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
@@ -190,7 +197,7 @@ VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.19"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.20"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -216,9 +223,9 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
                                SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
                                                         SITE_H14, SITE_H15] if DEBUG else [])
-ALL_SITES = lambda: ALL_SITES() if False else (SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
-                               SITE_H5B, SITE_H6, SITE_S1, SITE_S2] + ([SITE_H8, SITE_H9, SITE_H11,
-                                                        SITE_H14, SITE_H15] if DEBUG else []))
+ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
+                               SITE_H5B, SITE_H6, SITE_S3] + ([SITE_H8, SITE_H9, SITE_H11,
+                                                        SITE_H14, SITE_H15] if DEBUG else [])
 
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
@@ -354,6 +361,7 @@ class Asm:
     def mov_mem_abs(self, r, va):             self._e(b'\x89' + _modrm(0, REG[r], 5) + _p32(va))
     def call_iat(self, va):                   self._e(b'\xFF\x15' + _p32(va))
     def raw(self, bs):                          self._e(bs)
+    def add_mem_r(self, base, disp, r):       self._e(b'\x01' + _mem(REG[r], base, disp))
     def mov_mem_imm8(self, base, disp, imm):
         self._e(b'\xC6' + _mem(0, base, disp) + bytes([imm & 0xFF]))
 
@@ -1157,84 +1165,42 @@ def build_wtab(va, env):
     return bytes(blob)
 
 
-def build_dscale(va, env):
-    """dscale(eax=value, edx=axis(0=X,1=Y)) -> eax = value*base/live (деление
-    на k). mode null или k==1 -> value без изменений. Портит eax/ecx/edx."""
+def build_s3stub(va, env):
+    """S3 (0x50DA05, 14 Б): eax=cursorX, edx=screen. Сохраняет cursor+delta в
+    [esp0+0x40/0x44]: delta=(k-1)*(302,192), k=(W/1024,H/768) из mode-объекта
+    (пространство глобальной таблицы секторов [0x826c7c] смещено от отрисовки
+    ровно на эту delta — замер 1600x900: (+170,+33)). Hover И click читают эти
+    слоты => оба попадают в нарисованное. mode null -> сырой курсор.
+    y читаем в ebx ДО cdq (cdq портит edx=screen)."""
     a = Asm(va)
-    a.push_r('eax')                              # value
-    a.sub_esp(16)
-    a.mov_r_abs32('ecx', VA_MODE_OBJ)
-    a.mov_r_mem('ecx', 'ecx', 0x18)
-    a.test_rr('ecx', 'ecx'); a.jz('ddone')
-    a.mov_r_mem('eax', 'ecx', 0x14); a.mov_mem_r('esp', 0, 'eax')    # W
-    a.mov_r_mem('eax', 'ecx', 0x18); a.mov_mem_r('esp', 4, 'eax')    # H
-    a.mov_r_abs32('ecx', VA_SCREEN)
-    a.mov_r_mem('ecx', 'ecx', 0x188)
-    a.test_rr('ecx', 'ecx'); a.jnz('db1024')
-    a.mov_mem_imm('esp', 8, 800); a.mov_mem_imm('esp', 12, 600)
-    a.jmp32('dhava')
-    a.L('db1024')
-    a.mov_mem_imm('esp', 8, 1024); a.mov_mem_imm('esp', 12, 768)
-    a.L('dhava')
-    a.mov_r_mem('eax', 'esp', 0); a.cmp_r_mem('eax', 'esp', 8); a.jne('ddiv')
-    a.mov_r_mem('eax', 'esp', 4); a.cmp_r_mem('eax', 'esp', 12); a.je('ddone')
-    a.L('ddiv')
-    a.test_rr('edx', 'edx'); a.jnz('dy')
-    a.mov_r_mem('eax', 'esp', 16)                # value (pushed)
-    a.imul_r_mem('eax', 'esp', 8)                # * baseW
-    a.cdq(); a.idiv_mem('esp', 0)                # / W
-    a.mov_mem_r('esp', 16, 'eax')
-    a.jmp32('ddone')
-    a.L('dy')
-    a.mov_r_mem('eax', 'esp', 16)
-    a.imul_r_mem('eax', 'esp', 12)               # * baseH
-    a.cdq(); a.idiv_mem('esp', 4)                # / H
-    a.mov_mem_r('esp', 16, 'eax')
-    a.L('ddone')
-    a.add_esp(16)
-    a.pop_r('eax')
-    a.ret()
-    a.resolve()
-    return bytes(a.b)
-
-
-def build_s1stub(va, env):
-    """S1 (0x50F67D): eax/ecx = локальные координаты hover-теста (цикл с
-    active). Делим на k (dscale), затем украденные store'ы и jmp 0x50F685.
-    dscale портит eax/ecx/edx — значения переносим через стек."""
-    DS = env['dscale']
-    a = Asm(va)
-    a.push_r('ecx')                              # y
-    a.mov_r_imm('edx', 0); a.call_va(DS)         # x'
-    a.push_r('eax')                              # x'
-    a.mov_r_mem('eax', 'esp', 4)                 # y
-    a.mov_r_imm('edx', 1); a.call_va(DS)         # y'
-    a.mov_rr('ecx', 'eax')
-    a.pop_r('eax')                               # x'
-    a.add_esp(4)
-    a.mov_mem_r('esp', 0x28, 'eax')              # украденные
-    a.mov_mem_r('esp', 0x2c, 'ecx')
-    a.jmp32(RET_S1)
-    a.resolve()
-    return bytes(a.b)
-
-
-def build_s2stub(va, env):
-    """S2 (0x50F5FC): eax/edx = локальные координаты второго hover-цикла
-    (origin [+0x1e8]). Делим на k, украденные store'ы, jmp 0x50F604."""
-    DS = env['dscale']
-    a = Asm(va)
-    a.push_r('edx')                              # y
-    a.mov_r_imm('edx', 0); a.call_va(DS)         # x'
-    a.push_r('eax')                              # x'
-    a.mov_r_mem('eax', 'esp', 4)                 # y
-    a.mov_r_imm('edx', 1); a.call_va(DS)         # y'
-    a.mov_rr('edx', 'eax')
-    a.pop_r('eax')                               # x'
-    a.add_esp(4)
-    a.mov_mem_r('esp', 0x10, 'eax')              # украденные
-    a.mov_mem_r('esp', 0x14, 'edx')
-    a.jmp32(RET_S2)
+    a.pushad()
+    a.mov_r_mem('ebx', 'edx', 0xe4)              # y (до cdq!)
+    a.mov_r_abs32('eax', VA_MODE_OBJ)
+    a.mov_r_mem('eax', 'eax', 0x18)
+    a.test_rr('eax', 'eax'); a.jz('s3raw')
+    # dx = W*302/1024 - 302
+    a.mov_r_mem('ecx', 'eax', 0x14)
+    a.imul_r_r_imm('ecx', 'ecx', WHEEL_PX)
+    a.push_imm(1024)
+    a.mov_rr('eax', 'ecx'); a.cdq(); a.idiv_mem('esp', 0); a.add_esp(4)
+    a.add_eax_imm32(-WHEEL_PX)
+    a.add_mem_r('esp', 28, 'eax')                # saved eax (x) += dx
+    # dy = H*192/768 - 192
+    a.mov_r_abs32('eax', VA_MODE_OBJ)
+    a.mov_r_mem('eax', 'eax', 0x18)
+    a.mov_r_mem('ecx', 'eax', 0x18)
+    a.imul_r_r_imm('ecx', 'ecx', WHEEL_PY)
+    a.push_imm(768)
+    a.mov_rr('eax', 'ecx'); a.cdq(); a.idiv_mem('esp', 0); a.add_esp(4)
+    a.add_eax_imm32(-WHEEL_PY)                   # dy
+    a.add_rr('eax', 'ebx')                       # y' = y + dy
+    a.mov_rr('ebx', 'eax')
+    a.L('s3raw')
+    a.mov_mem_r('esp', 24, 'ebx')                # saved ecx = y'
+    a.popad()
+    a.mov_mem_r('esp', 0x40, 'eax')              # украденные store'ы
+    a.mov_mem_r('esp', 0x44, 'ecx')
+    a.jmp32(RET_S3)
     a.resolve()
     return bytes(a.b)
 
@@ -1248,7 +1214,7 @@ def extra_order():
 def part_order():
     return (('trampA', 'post_scale', 'scale_rect', 'scale_one', 'post_done',
              'maskfix', 'add_stub', 'savefix', 'savefix_tbl', 'draw_stub',
-             'rowl_stub', 'sel_stub', 'dscale', 's1stub', 's2stub'))
+             'rowl_stub', 'sel_stub', 's3stub'))
 
 
 DATA_PARTS = {'savefix_tbl', 'evt_str', 'wtab'}
@@ -1264,16 +1230,14 @@ def layout_parts():
         'maskfix': build_mask, 'add_stub': build_addstub,
         'savefix': build_savefix, 'savefix_tbl': build_savefix_tbl,
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
-        'sel_stub': build_selstub,
-        'dscale': build_dscale, 's1stub': build_s1stub, 's2stub': build_s2stub,
+        'sel_stub': build_selstub, 's3stub': build_s3stub,
     } if DEBUG else {
         'trampA': build_trampA, 'post_scale': build_post, 'post_done': build_post_done,
         'scale_rect': build_scale_rect, 'scale_one': build_scale_one,
         'maskfix': build_mask, 'add_stub': build_addstub,
         'savefix': build_savefix, 'savefix_tbl': build_savefix_tbl,
         'draw_stub': build_drawstub, 'rowl_stub': build_rowlstub,
-        'sel_stub': build_selstub,
-        'dscale': build_dscale, 's1stub': build_s1stub, 's2stub': build_s2stub,
+        'sel_stub': build_selstub, 's3stub': build_s3stub,
     }
     order = part_order()
     sizes = {n: len(builders[n](CAVE_VA, env0)) for n in order}
@@ -1364,7 +1328,7 @@ def make_patched(d, parts, va, extra=None):
         img[va2file(va_s):va2file(va_s) + 2] = bytes.fromhex(new)
     pairs = ((SITE_H1, 'trampA'), (SITE_H2, 'post_scale'), (SITE_H3, 'maskfix'),
              (SITE_H4, 'add_stub'), (SITE_H5A, 'draw_stub'), (SITE_H5B, 'rowl_stub'),
-             (SITE_H6, 'sel_stub'), (SITE_S1, 's1stub'), (SITE_S2, 's2stub'))
+             (SITE_H6, 'sel_stub'), (SITE_S3, 's3stub'))
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
                   (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'),
@@ -1436,7 +1400,7 @@ def verify_disasm(parts, va, listing=False, extra=None):
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
                RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
                RET_H14, RET_H15, VA_MSGBASE, VA_ITER, VA_DRAWBASE,
-               RET_S1, RET_S2} | set(va.values())
+               RET_S3} | set(va.values())
     xparts, xva = (extra or ({}, {}))
     allowed |= set(xva.values())
     n_ins = 0
@@ -2200,37 +2164,26 @@ def emu_tests(patched_img, va, extra=None):
         chk("T12 stolen: esp=entry-8", cpu.r['esp'], esp0 - 8)
         chk("T12 WriteFile len=44", m.r32(SLOT_LEN), 44)
 
-    # --- T14: S1/S2 — деление локальных координат hover-теста на k (0.0.19)
-    print("test T14: s1stub/s2stub (local/k в hover-тестах колеса)")
+    # --- T15: s3stub (S3) — сдвиг курсора на delta=(k-1)*(302,192)
+    print("test T15: s3stub (курсор+delta в hover/click-слоты колеса)")
     cpu = new_cpu(); m = cpu.m
     setup_mode(m, w=1600, h=900)
-    m.w32(VA_SCREEN, VA_SCREEN)
-    m.w32(VA_SCREEN + 0x188, 1)                  # flag=1 -> base 1024x768
+    sobj = HEAP + 0x7400
+    m.w32(sobj + 0xe4, 790)
     esp0 = STACK + 0x10000
-    cpu.r.update(eax=200, ecx=150, edx=0x77, ebx=0xBB, esp=esp0)
-    cpu.run(va['s1stub'], RET_S1)
-    chk("T14 S1: x 200->128", m.r32(esp0 + 0x28), 128)
-    chk("T14 S1: y 150->128", m.r32(esp0 + 0x2c), 128)
-    chk("T14 S1: ebx/esi целы", (cpu.r['ebx'], cpu.r['esi']), (0xBB, cpu.r['esi']))
-    chk("T14 S1: esp balance", cpu.r['esp'], esp0)
-    cpu = new_cpu(); m = cpu.m
-    setup_mode(m, w=1600, h=900)
-    m.w32(VA_SCREEN, VA_SCREEN)
-    m.w32(VA_SCREEN + 0x188, 1)
-    cpu.r.update(eax=200, edx=150, ecx=0x55, ebx=0xBB, esp=esp0)
-    cpu.run(va['s2stub'], RET_S2)
-    chk("T14 S2: x 200->128", m.r32(esp0 + 0x10), 128)
-    chk("T14 S2: y 150->128", m.r32(esp0 + 0x14), 128)
-    chk("T14 S2: ebx цел (live на сайте)", cpu.r['ebx'], 0xBB)
-    # k==1: транзит
+    cpu.r.update(eax=1385, edx=sobj, ebx=0xBB, esp=esp0)
+    cpu.run(va['s3stub'], RET_S3)
+    chk("T15 x'=1385+169", m.r32(esp0 + 0x40), 1554)
+    chk("T15 y'=790+33", m.r32(esp0 + 0x44), 823)
+    chk("T15 edx/ebx целы", (cpu.r['edx'], cpu.r['ebx']), (sobj, 0xBB))
+    chk("T15 esp balance", cpu.r['esp'], esp0)
     cpu = new_cpu(); m = cpu.m
     setup_mode(m, w=1024, h=768)
-    m.w32(VA_SCREEN, VA_SCREEN)
-    m.w32(VA_SCREEN + 0x188, 1)
-    cpu.r.update(eax=200, ecx=150, esp=esp0)
-    cpu.run(va['s1stub'], RET_S1)
-    chk("T14 S1 @1024x768: транзит", (m.r32(esp0 + 0x28), m.r32(esp0 + 0x2c)),
-        (200, 150))
+    m.w32(sobj + 0xe4, 790)
+    cpu.r.update(eax=1385, edx=sobj, esp=esp0)
+    cpu.run(va['s3stub'], RET_S3)
+    chk("T15 @1024x768 транзит", (m.r32(esp0 + 0x40), m.r32(esp0 + 0x44)),
+        (1385, 790))
 
     return ok
 
