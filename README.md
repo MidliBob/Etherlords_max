@@ -80,7 +80,6 @@ python3 tools/patch_native_v3.py /путь/к/вашему/Etherlords.exe --no-l
 
 ```bash
 python3 tools/patch_layout.py /путь/к/вашему/Etherlords.exe   # -> Etherlords_layout1024.exe
-# сделать бэкап своего Etherlords.exe и положить результат под его именем
 ```
 
 ## Статус native (v6 — актуальный)
