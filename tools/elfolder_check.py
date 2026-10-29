@@ -36,7 +36,8 @@ V6DBG_SHA = {                     # sha256[:8] -> что это за сборк�
     "3f0ae279": "RELEASE 0.0.19: S1/S2 не попадали в живой код — колесо не чинит",
     "48474d47": "v6dbg 0.0.19: то же (логгеры исправны, фикс нет)",
     "0062b29e": "RELEASE 0.0.20: фикс hover+click колеса (S3: курсор+delta)",
-    "a75a9e27": "v6dbg 0.0.20: фикс колеса + логгеры — ТО, ЧТО НУЖНО",
+    "a75a9e27": "v6dbg 0.0.20: S3 в мёртвой ветке — колесо не чинит",
+    "34eebb9b": "v6dbg 0.0.21: + H10rev hit-test логгер (kind=7) — ТО, ЧТО НУЖНО",
 }
 
 
@@ -62,6 +63,8 @@ def log_stats(path):
         k = struct.unpack_from('<I', d, off)[0]
         if k == 3 and off + 56 <= len(d):
             off += 56
+        elif k == 7 and off + 60 <= len(d):
+            off += 60
         else:
             off += 44
         kinds[k] = kinds.get(k, 0) + 1
@@ -129,7 +132,7 @@ def main():
         mt = os.path.getmtime(lp)
         out.append(f"el_evt.log: {size} байт, изменён {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mt))}, "
                    f"рекорды: " + ", ".join(f"kind{k}={n}" for k, n in sorted(kinds.items())) +
-                   f", hover(kind3)={kinds.get(3, 0)}, wheelin(kind4)={kinds.get(4, 0)}, msgevt(kind5)={kinds.get(5, 0)}, msgrcv(kind6)={kinds.get(6, 0)}")
+                   f", hover(kind3)={kinds.get(3, 0)}, wheelin(kind4)={kinds.get(4, 0)}, msgevt(kind5)={kinds.get(5, 0)}, msgrcv(kind6)={kinds.get(6, 0)}, hittest(kind7)={kinds.get(7, 0)}")
         if mtime_exe is not None:
             if mt < mtime_exe:
                 out.append("  ВНИМАНИЕ: лог СТАРЕЕ exe v6dbg — сеанс новой сборки не писал лог "

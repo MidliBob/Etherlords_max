@@ -174,6 +174,13 @@ SITE_H15 = ("H15", 0x58E7B0, "53578bf9e8c72f0000", 9)
 SITE_S3 = ("S3", 0x50DA05, "894424408b8ae4000000894c2444", 14)
 RET_S3 = 0x50DA13
 WHEEL_PX, WHEEL_PY = 302, 192          # design-якорь рассинхрона таблицы секторов
+# H10rev (0.0.21): ГЛОБАЛЬНЫЙ hit-test 0x58FB70 (пролог 8 Б: sub esp,0x54; push
+# ebx; mov ebx,[esp+0x60]) — им pump выбирает цель И базовый хендлер проверяет
+# детей: его аргументы (x,y) и rect'ы тестируемого объекта дают ТОЧНОЕ
+# пространство рассинхрона. Рекорд kind=7 (60 Б): this, vt, x, y, +0x154 LTRB,
+# +0x164 LTRB. В .ellog, только debug.
+SITE_H10 = ("H10", 0x58FB70, "83ec54538b5c2460", 8)
+RET_HIT = 0x58FB78
 RET_H15 = 0x58E7B9
 VA_MSGBASE = 0x591780                   # украденный call из пролога 0x58e7b0
 EXTRA_RVA = 0x43B000       # RVA новой секции .ellog (= SizeOfImage оригинала)
@@ -192,12 +199,14 @@ IAT_WRITEFILE   = 0x75617C
 # mov ebx,0x829768 @0x5428de — блок констант экрана сохранений). Отгруженная
 # v5dbg их фактически не использовала (в её cave нет ссылок), но повторно
 # брать их нельзя.
+VA_SCRATCH    = 0x830100   # 60 Б scratch для рекорда kind=7 (вне стека: украденный
+                           # пролог hit-test спускает стек в стек-кадр рекорда)
 VA_LOG_FLAG   = 0x830040   # 0 = первое событие сессии: CREATE_ALWAYS (усечь лог), далее 1
 VA_LOG_COUNT  = 0x830044   # счётчик рекордов сессии
 VA_LOG_LASTI  = 0x830048   # H11: последний залогированный hover-индекс (dedup)
 DBG_CAP       = 20000      # лимит рекордов на сессию (44 Б * 20000 ≈ 880 КБ)
 MARK_SCALED = 0x04                       # (nibble & MARK_MASK) == MARK_SCALED
-TOOL_REV = "0.0.20"                      # ревизия сборщика: печатается в баннере и
+TOOL_REV = "0.0.21"                      # ревизия сборщика: печатается в баннере и
                                          # читается tools/elfolder_check.py в папке игры
 
 # Сайты: (имя, VA, ожидаемые байты, размер замены)
@@ -222,10 +231,12 @@ SITE_H6 = ("H6", 0x5461BC, "c74424149e", 5)          # mov dword [esp+0x14],0x9e
 
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
                                SITE_H5B, SITE_H6] + ([SITE_H8, SITE_H9, SITE_H11,
-                                                        SITE_H14, SITE_H15] if DEBUG else [])
+                                                        SITE_H14, SITE_H15,
+                                                        SITE_H10] if DEBUG else [])
 ALL_SITES = lambda: SITE_P1 + [SITE_H1, SITE_H2, SITE_H3, SITE_H4, SITE_H5A,
                                SITE_H5B, SITE_H6, SITE_S3] + ([SITE_H8, SITE_H9, SITE_H11,
-                                                        SITE_H14, SITE_H15] if DEBUG else [])
+                                                        SITE_H14, SITE_H15,
+                                                        SITE_H10] if DEBUG else [])
 
 
 # design-константы блока меню сохранений (addr, value, axis): axis 0=X(kx), 1=Y(ky).
@@ -359,6 +370,7 @@ class Asm:
     def push_imm(self, v):                  self._e(b'\x68' + _p32(v))
     def push_mem(self, va):                   self._e(b'\xFF\x35' + _p32(va))
     def mov_mem_abs(self, r, va):             self._e(b'\x89' + _modrm(0, REG[r], 5) + _p32(va))
+    def mov_mem_imm_abs(self, va, imm):       self._e(b'\xC7' + _modrm(0, 0, 5) + _p32(va) + _p32(imm))
     def call_iat(self, va):                   self._e(b'\xFF\x15' + _p32(va))
     def raw(self, bs):                          self._e(bs)
     def add_mem_r(self, base, disp, r):       self._e(b'\x01' + _mem(REG[r], base, disp))
@@ -1157,6 +1169,42 @@ def build_wrecv(va, env):
     return bytes(a.b)
 
 
+def build_evt_hit7(va, env):
+    """H10rev: пролог hit-test 0x58FB70 (8 Б). thiscall: ecx=this; аргументы
+    (x,y) = [esp+4]/[esp+8]. Рекорд kind=7 (60 Б): this, vt, x, y,
+    [+0x154] LTRB, [+0x164] LTRB."""
+    W = env['evt_write']
+    a = Asm(va)
+    a.pushad()
+    SC = VA_SCRATCH
+    a.mov_mem_imm_abs(SC, 7)
+    a.mov_mem_abs('ecx', SC + 4)
+    a.mov_r_mem('eax', 'ecx', 0);   a.mov_mem_abs('eax', SC + 8)
+    a.mov_r_imm('eax', 0x58FB70);   a.mov_mem_abs('eax', SC + 12)
+    a.mov_mem_imm_abs(SC + 16, 0)
+    a.mov_r_mem('eax', 'esp', 36);  a.mov_mem_abs('eax', SC + 20)   # x ([esp0+4])
+    a.mov_r_mem('eax', 'esp', 40);  a.mov_mem_abs('eax', SC + 24)   # y
+    a.mov_r_mem('eax', 'ecx', 0x154); a.mov_mem_abs('eax', SC + 28)
+    a.mov_r_mem('eax', 'ecx', 0x158); a.mov_mem_abs('eax', SC + 32)
+    a.mov_r_mem('eax', 'ecx', 0x15c); a.mov_mem_abs('eax', SC + 36)
+    a.mov_r_mem('eax', 'ecx', 0x160); a.mov_mem_abs('eax', SC + 40)
+    a.mov_r_mem('eax', 'ecx', 0x164); a.mov_mem_abs('eax', SC + 44)
+    a.mov_r_mem('eax', 'ecx', 0x168); a.mov_mem_abs('eax', SC + 48)
+    a.mov_r_mem('eax', 'ecx', 0x16c); a.mov_mem_abs('eax', SC + 52)
+    a.mov_r_mem('eax', 'ecx', 0x170); a.mov_mem_abs('eax', SC + 56)
+    a.mov_r_imm('eax', env['evt_str'])
+    a.mov_r_imm('edx', SC)
+    a.mov_r_imm('ecx', 60)
+    a.call_va(W)
+    a.popad()
+    a.sub_esp(0x54)                              # украденные
+    a.push_r('ebx')
+    a.mov_r_mem('ebx', 'esp', 0x60)
+    a.jmp32(RET_HIT)
+    a.resolve()
+    return bytes(a.b)
+
+
 def build_wtab(va, env):
     """Таблица оригиналов: wtab[slot*4] = адрес исходной виртуальной функции."""
     blob = bytearray(max(WHEEL_SLOTS) * 4 + 4)
@@ -1208,7 +1256,7 @@ def build_s3stub(va, env):
 # ------------------------------------------------------------------- раскладка
 def extra_order():
     return ('wtramp', 'wstub', 'wtab', 'wdisp', 'wrecv', 'evt_write',
-            'evt_setrect', 'evt_olc', 'evt_hover', 'evt_str')
+            'evt_setrect', 'evt_olc', 'evt_hover', 'evt_hit7', 'evt_str')
 
 
 def part_order():
@@ -1265,9 +1313,10 @@ def layout_extra(va_main):
                 'wdisp': build_wdisp, 'wrecv': build_wrecv,
                 'evt_write': build_evt_write,
                 'evt_setrect': build_evt_setrect, 'evt_olc': build_evt_olc,
-                'evt_hover': build_evt_hover, 'evt_str': build_evt_str}
+                'evt_hover': build_evt_hover, 'evt_hit7': build_evt_hit7,
+                'evt_str': build_evt_str}
     env0 = {'wstub': EXTRA_VA, 'wtab': EXTRA_VA, 'wdisp': EXTRA_VA,
-            'wrecv': EXTRA_VA, 'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA}
+            'evt_write': EXTRA_VA, 'evt_str': EXTRA_VA, 'evt_hit7': EXTRA_VA}
     sizes = {n: len(builders[n](EXTRA_VA, env0)) for n in extra_order()}
     off = 0
     xva = {}
@@ -1332,7 +1381,7 @@ def make_patched(d, parts, va, extra=None):
     if DEBUG:
         pairs += ((SITE_H8, 'evt_setrect'), (SITE_H9, 'evt_olc'),
                   (SITE_H11, 'evt_hover'), (SITE_H14, 'wdisp'),
-                  (SITE_H15, 'wrecv'))
+                  (SITE_H15, 'wrecv'), (SITE_H10, 'evt_hit7'))
     vmap = dict(va)
     if extra is not None:
         vmap.update(extra[1])
@@ -1399,7 +1448,7 @@ def verify_disasm(parts, va, listing=False, extra=None):
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     allowed = {RET_TRAMP, RET_POST, RET_MASK, RET_ADD, RET_DRAW, RET_ROWL,
                RET_SEL1, RET_SEL2, RET_SETRECT, RET_OLC, RET_H11,
-               RET_H14, RET_H15, VA_MSGBASE, VA_ITER, VA_DRAWBASE,
+               RET_H14, RET_H15, RET_HIT, VA_MSGBASE, VA_ITER, VA_DRAWBASE,
                RET_S3} | set(va.values())
     xparts, xva = (extra or ({}, {}))
     allowed |= set(xva.values())
@@ -2184,6 +2233,48 @@ def emu_tests(patched_img, va, extra=None):
     cpu.run(va['s3stub'], RET_S3)
     chk("T15 @1024x768 транзит", (m.r32(esp0 + 0x40), m.r32(esp0 + 0x44)),
         (1385, 790))
+
+    # --- T16: evt_hit7 (H10rev) — рекорд kind=7 hit-test'а
+    if not extra or 'evt_hit7' not in extra[1]:
+        print("test T16: пропущен (release-сборка без .ellog)")
+    else:
+        print("test T16: evt_hit7 (hit-test 0x58fb70: xy + rect'ы цели)")
+        xva = extra[1]
+        STUBS = HEAP + 0x30000
+        SLOT_DISP, SLOT_LEN = HEAP + 0x31000, HEAP + 0x31004
+        stub_cfa = (b"\x8b\x44\x24\x14" + b"\xa3" + _p32(SLOT_DISP)
+                    + b"\xb8\x34\x12\x00\x00" + b"\xc2\x1c\x00")
+        stub_wf = (b"\x8b\x44\x24\x0c" + b"\xa3" + _p32(SLOT_LEN)
+                   + b"\xb8\x01\x00\x00\x00" + b"\xc2\x14\x00")
+        stub_ch = b"\xb8\x01\x00\x00\x00" + b"\xc2\x04\x00"
+        cpu = new_cpu(); m = cpu.m
+        m.wb(STUBS, stub_cfa.ljust(32, b'\x90'))
+        m.wb(STUBS + 32, stub_wf.ljust(32, b'\x90'))
+        m.wb(STUBS + 64, stub_ch.ljust(16, b'\x90'))
+        m.w32(IAT_CREATEFILEA, STUBS)
+        m.w32(IAT_WRITEFILE, STUBS + 32)
+        m.w32(IAT_CLOSEHANDLE, STUBS + 64)
+        ctl = HEAP + 0x8400
+        m.w32(ctl, 0x75A6BC)
+        for j, v in enumerate((10, 20, 30, 40)):
+            m.w32(ctl + 0x154 + 4 * j, v)
+        for j, v in enumerate((100, 200, 300, 400)):
+            m.w32(ctl + 0x164 + 4 * j, v)
+        m.w32(VA_LOG_FLAG, 1); m.w32(VA_LOG_COUNT, 0)
+        esp0 = STACK + 0x10000
+        m.w32(esp0, 0xC0FFEE); m.w32(esp0 + 4, 1542); m.w32(esp0 + 8, 735)
+        cpu.r.update(ecx=ctl, esp=esp0)
+        cpu.run(xva['evt_hit7'], RET_HIT)
+        b = VA_SCRATCH
+        chk("T16 kind=7", m.r32(b + 0), 7)
+        chk("T16 this/vt", (m.r32(b + 4), m.r32(b + 8)), (ctl, 0x75A6BC))
+        chk("T16 xy=(1542,735)", (m.r32(b + 20), m.r32(b + 24)), (1542, 735))
+        chk("T16 r154", [m.r32(b + 28 + 4 * j) for j in range(4)], [10, 20, 30, 40])
+        chk("T16 r164", [m.r32(b + 44 + 4 * j) for j in range(4)],
+            [100, 200, 300, 400])
+        chk("T16 stolen: ebx=y", cpu.r['ebx'], 735)
+        chk("T16 stolen: esp=entry-0x58", cpu.r['esp'], esp0 - 0x58)
+        chk("T16 WriteFile len=60", m.r32(SLOT_LEN), 60)
 
     return ok
 

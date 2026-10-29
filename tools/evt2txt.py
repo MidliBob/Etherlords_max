@@ -41,6 +41,9 @@ def iter_records(data):
         if kind in (3, 5) and off + 56 <= len(data):
             yield struct.unpack_from('<14I', data, off)
             off += 56
+        elif kind == 7 and off + 60 <= len(data):
+            yield struct.unpack_from('<15I', data, off)
+            off += 60
         else:
             yield struct.unpack_from('<11I', data, off)
             off += 44
@@ -105,6 +108,12 @@ def main():
             code, a2, a3, cx, cy = r[5], r[6], r[7], r[8], r[9]
             lines.append(f"{i:6d} msgrcv    this={this:#010x} vt={nm:22s} code={code:#x} "
                          f"args=({a2},{a3}) cursor=({cx},{cy})")
+        elif k == 7:
+            x, y = r[5], r[6]
+            r154 = tuple(map(s32, r[7:11]))
+            r164 = tuple(map(s32, r[11:15]))
+            lines.append(f"{i:6d} hittest   this={this:#010x} vt={nm:22s} xy=({x},{y}) "
+                         f"r154={r154} r164={r164}")
         else:
             lines.append(f"{i:6d} kind={k}  this={this:#010x} vt={nm:22s} ret={ret:#010x}")
     head = [f"# source : {src} ({len(data)} bytes)",
